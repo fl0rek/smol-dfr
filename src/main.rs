@@ -1,8 +1,5 @@
-use anyhow::{anyhow, Result};
-use cairo::{Antialias, Context, Format, ImageSurface, Surface};
 use chrono::{Local, Locale, Timelike, format::{StrftimeItems, Item as ChronoItem}};
 use drm::control::ClipRect;
-use freedesktop_icons::lookup;
 use input::{
     event::{
         device::DeviceEvent,
@@ -15,7 +12,6 @@ use input::{
 use input_linux::{uinput::UInputHandle, EventKind, Key, SynchronizeKind};
 use input_linux_sys::{input_event, input_id, timeval, uinput_setup};
 use libc::{c_char, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
-use librsvg_rebind::{prelude::HandleExt, Handle, Rectangle};
 use nix::{
     errno::Errno,
     sys::{
@@ -33,28 +29,23 @@ use std::{
         unix::{fs::OpenOptionsExt, io::OwnedFd},
     },
     panic::{self, AssertUnwindSafe},
-    path::{Path, PathBuf},
+    path::Path,
 };
 use udev::MonitorBuilder;
 
 mod backlight;
 mod config;
 mod display;
-mod fonts;
 mod iced_renderer;
 mod pixel_shift;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
-use config::{ButtonConfig, Config};
+use config::ButtonConfig;
 use display::DrmBackend;
 use iced_renderer::{ButtonDef, Message as IcedMessage, TouchbarRenderer};
-use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+use pixel_shift::PixelShiftManager;
 
-const BUTTON_SPACING_PX: i32 = 16;
-const BUTTON_COLOR_INACTIVE: f64 = 0.200;
-const BUTTON_COLOR_ACTIVE: f64 = 0.400;
-const ICON_SIZE: i32 = 48;
 const TIMEOUT_MS: i32 = 10 * 1000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,34 +55,11 @@ enum BatteryState {
     Low,
 }
 
-struct BatteryImages {
-    plain: Vec<Handle>,
-    charging: Vec<Handle>,
-    bolt: Handle,
-}
-
-#[derive(Eq, PartialEq, Copy, Clone)]
-enum BatteryIconMode {
-    Percentage,
-    Icon,
-    Both
-}
-
-impl BatteryIconMode {
-    fn should_draw_icon(self) -> bool {
-        self != BatteryIconMode::Percentage
-    }
-    fn should_draw_text(self) -> bool {
-        self != BatteryIconMode::Icon
-    }
-}
-
 enum ButtonImage {
     Text(String),
-    Svg(Handle),
-    Bitmap(ImageSurface),
+    Icon(String),
     Time(Vec<ChronoItem<'static>>, Locale),
-    Battery(String, BatteryIconMode, BatteryImages),
+    Battery(String),
     Spacer,
 }
 
@@ -101,90 +69,6 @@ struct Button {
     active: bool,
     action: Vec<Key>,
     color: Option<(f64, f64, f64)>,
-}
-
-fn try_load_svg(path: &str) -> Result<ButtonImage> {
-    Ok(ButtonImage::Svg(
-        Handle::from_file(path)?.ok_or(anyhow!("failed to load image"))?,
-    ))
-}
-
-fn try_load_png(path: impl AsRef<Path>) -> Result<ButtonImage> {
-    let mut file = File::open(path)?;
-    let surf = ImageSurface::create_from_png(&mut file)?;
-    if surf.height() == ICON_SIZE && surf.width() == ICON_SIZE {
-        return Ok(ButtonImage::Bitmap(surf));
-    }
-    let resized = ImageSurface::create(Format::ARgb32, ICON_SIZE, ICON_SIZE).unwrap();
-    let c = Context::new(&resized).unwrap();
-    c.scale(
-        ICON_SIZE as f64 / surf.width() as f64,
-        ICON_SIZE as f64 / surf.height() as f64,
-    );
-    c.set_source_surface(surf, 0.0, 0.0).unwrap();
-    c.set_antialias(Antialias::Best);
-    c.paint().unwrap();
-    Ok(ButtonImage::Bitmap(resized))
-}
-
-fn try_load_image(name: impl AsRef<str>, theme: Option<impl AsRef<str>>) -> Result<ButtonImage> {
-    let name = name.as_ref();
-    let locations;
-
-    // Load list of candidate locations
-    if let Some(theme) = theme {
-        // Freedesktop icons
-        let theme = theme.as_ref();
-        let candidates = vec![
-            lookup(name)
-                .with_cache()
-                .with_theme(theme)
-                .with_size(ICON_SIZE as u16)
-                .force_svg()
-                .find(),
-            lookup(name)
-                .with_cache()
-                .with_theme(theme)
-                .force_svg()
-                .find(),
-        ];
-
-        // .flatten() removes `None` and unwraps `Some` values
-        locations = candidates.into_iter().flatten().collect();
-    } else {
-        // Standard file icons
-        locations = vec![
-            PathBuf::from(format!("/etc/tiny-dfr/{name}.svg")),
-            PathBuf::from(format!("/etc/tiny-dfr/{name}.png")),
-            PathBuf::from(format!("/usr/share/tiny-dfr/{name}.svg")),
-            PathBuf::from(format!("/usr/share/tiny-dfr/{name}.png")),
-        ];
-    };
-
-    // Try to load each candidate
-    let mut last_err = anyhow!("no suitable icon path was found"); // in case locations is empty
-
-    for location in locations {
-        let result = match location.extension().and_then(|s| s.to_str()) {
-            Some("png") => try_load_png(&location),
-            Some("svg") => try_load_svg(
-                location
-                    .to_str()
-                    .ok_or(anyhow!("image path is not unicode"))?,
-            ),
-            _ => Err(anyhow!("invalid file extension")),
-        };
-
-        match result {
-            Ok(image) => return Ok(image),
-            Err(err) => {
-                last_err = err.context(format!("while loading path {}", location.display()));
-            }
-        };
-    }
-
-    // if function hasn't returned by now, all sources have been exhausted
-    Err(last_err.context(format!("failed loading all possible paths for icon {name}")))
 }
 
 fn find_battery_device() -> Option<String> {
@@ -250,12 +134,12 @@ impl Button {
         let mut button = if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
         } else if let Some(icon) = cfg.icon {
-            Button::new_icon(&icon, cfg.theme, cfg.action)
+            Button::new_icon(&icon, cfg.action)
         } else if let Some(time) = cfg.time {
             Button::new_time(cfg.action, &time, cfg.locale.as_deref())
         } else if let Some(battery_mode) = cfg.battery {
             if let Some(battery) = find_battery_device() {
-                Button::new_battery(cfg.action, battery, battery_mode, cfg.theme)
+                Button::new_battery(cfg.action, battery, battery_mode)
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
             }
@@ -283,52 +167,21 @@ impl Button {
             color: None,
         }
     }
-    fn new_icon(path: impl AsRef<str>, theme: Option<impl AsRef<str>>, action: Vec<Key>) -> Button {
-        let image = try_load_image(path, theme).expect("failed to load icon");
+    fn new_icon(name: impl AsRef<str>, action: Vec<Key>) -> Button {
         Button {
             action,
-            image,
+            image: ButtonImage::Icon(name.as_ref().to_string()),
             active: false,
             changed: false,
             color: None,
         }
     }
-    fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
-        if let ButtonImage::Svg(svg) = try_load_image(icon, theme).unwrap() {
-            return svg;
-        }
-        panic!("failed to load icon");
-    }
-    fn new_battery(action: Vec<Key>, battery: String, battery_mode: String, theme: Option<impl AsRef<str>>) -> Button {
-        let bolt = Self::load_battery_image("bolt", theme.as_ref());
-        let mut plain = Vec::new();
-        let mut charging = Vec::new();
-        for icon in [
-            "battery_0_bar", "battery_1_bar", "battery_2_bar", "battery_3_bar",
-            "battery_4_bar", "battery_5_bar", "battery_6_bar", "battery_full",
-        ] {
-            plain.push(Self::load_battery_image(icon, theme.as_ref()));
-        }
-        for icon in [
-            "battery_charging_20", "battery_charging_30", "battery_charging_50",
-            "battery_charging_60", "battery_charging_80",
-            "battery_charging_90", "battery_charging_full",
-        ] {
-            charging.push(Self::load_battery_image(icon, theme.as_ref()));
-        }
-        let battery_mode = match battery_mode.as_str() {
-            "icon" => BatteryIconMode::Icon,
-            "percentage" => BatteryIconMode::Percentage,
-            "both" => BatteryIconMode::Both,
-            _ => panic!("invalid battery mode, accepted modes: icon, percentage, both"),
-        };
+    fn new_battery(action: Vec<Key>, battery: String, _battery_mode: String) -> Button {
         Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::Battery(battery, battery_mode, BatteryImages {
-                plain, bolt, charging
-            }),
+            image: ButtonImage::Battery(battery),
             color: None,
         }
     }
@@ -371,107 +224,6 @@ impl Button {
             _ => false,
         }
     }
-    fn render(
-        &self,
-        c: &Context,
-        height: i32,
-        button_left_edge: f64,
-        button_width: u64,
-        y_shift: f64,
-    ) {
-        match &self.image {
-            ButtonImage::Text(text) => {
-                let extents = c.text_extents(text).unwrap();
-                c.move_to(
-                    button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                );
-                c.show_text(text).unwrap();
-            }
-            ButtonImage::Svg(svg) => {
-                let x =
-                    button_left_edge + (button_width as f64 / 2.0 - (ICON_SIZE / 2) as f64).round();
-                let y = y_shift + ((height as f64 - ICON_SIZE as f64) / 2.0).round();
-
-                svg.render_document(c, &Rectangle::new(x, y, ICON_SIZE as f64, ICON_SIZE as f64))
-                    .unwrap();
-            }
-            ButtonImage::Bitmap(surf) => {
-                let x =
-                    button_left_edge + (button_width as f64 / 2.0 - (ICON_SIZE / 2) as f64).round();
-                let y = y_shift + ((height as f64 - ICON_SIZE as f64) / 2.0).round();
-                c.set_source_surface(surf, x, y).unwrap();
-                c.rectangle(x, y, ICON_SIZE as f64, ICON_SIZE as f64);
-                c.fill().unwrap();
-            }
-            ButtonImage::Time(format, locale) => {
-                let current_time = Local::now();
-                let formatted_time = current_time.format_localized_with_items(format.iter(), *locale).to_string();
-                let time_extents = c.text_extents(&formatted_time).unwrap();
-                c.move_to(
-                    button_left_edge + (button_width as f64 / 2.0 - time_extents.width() / 2.0).round(),
-                    y_shift + (height as f64 / 2.0 + time_extents.height() / 2.0).round()
-                );
-                c.show_text(&formatted_time).unwrap();
-            }
-            ButtonImage::Battery(battery, battery_mode, icons) => {
-                let (capacity, state) = get_battery_state(battery);
-                let icon = if battery_mode.should_draw_icon() {
-                    Some(match state {
-                        BatteryState::Charging => match capacity {
-                            0..=20 => &icons.charging[0],
-                            21..=30 => &icons.charging[1],
-                            31..=50 => &icons.charging[2],
-                            51..=60 => &icons.charging[3],
-                            61..=80 => &icons.charging[4],
-                            81..=99 => &icons.charging[5],
-                            _ => &icons.charging[6],
-                        },
-                        _ => match capacity {
-                            0 => &icons.plain[0],
-                            1..=20 => &icons.plain[1],
-                            21..=30 => &icons.plain[2],
-                            31..=50 => &icons.plain[3],
-                            51..=60 => &icons.plain[4],
-                            61..=80 => &icons.plain[5],
-                            81..=99 => &icons.plain[6],
-                            _ => &icons.plain[7],
-                        },
-                    })
-                } else if state == BatteryState::Charging {
-                    Some(&icons.bolt)
-                } else {
-                    None
-                };
-                let percent_str = format!("{:.0}%", capacity);
-                let extents = c.text_extents(&percent_str).unwrap();
-                let mut width = extents.width();
-                let mut text_offset = 0;
-                if let Some(svg) = icon {
-                    if !battery_mode.should_draw_text() {
-                        width = ICON_SIZE as f64;
-                    } else {
-                        width += ICON_SIZE as f64;
-                    }
-                    text_offset = ICON_SIZE;
-                    let x =
-                        button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
-                    let y = y_shift + ((height as f64 - ICON_SIZE as f64) / 2.0).round();
-
-                    svg.render_document(c, &Rectangle::new(x, y, ICON_SIZE as f64, ICON_SIZE as f64))
-                        .unwrap();
-                }
-                if battery_mode.should_draw_text() {
-                    c.move_to(
-                        button_left_edge + (button_width as f64 / 2.0 - width / 2.0 + text_offset as f64).round(),
-                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                    );
-                    c.show_text(&percent_str).unwrap();
-                }
-            }
-            ButtonImage::Spacer => (),
-        }
-    }
     fn set_active<F>(&mut self, uinput: &mut UInputHandle<F>, active: bool)
     where
         F: AsRawFd,
@@ -481,22 +233,6 @@ impl Button {
             self.changed = true;
 
             toggle_keys(uinput, &self.action, active as i32);
-        }
-    }
-    fn set_background_color(&self, c: &Context, brightness: f64) {
-        if let Some((r, g, b)) = self.color {
-            // Scale the custom color by brightness (0.0 = black, 1.0 = full color)
-            let scale = brightness / BUTTON_COLOR_ACTIVE;
-            c.set_source_rgb(r * scale, g * scale, b * scale);
-        } else if let ButtonImage::Battery(battery, _, _) = &self.image {
-            let (_, state) = get_battery_state(battery);
-            match state {
-                BatteryState::NotCharging => c.set_source_rgb(brightness, brightness, brightness),
-                BatteryState::Charging => c.set_source_rgb(0.0, brightness, 0.0),
-                BatteryState::Low => c.set_source_rgb(brightness, 0.0, 0.0),
-            }
-        } else {
-            c.set_source_rgb(brightness, brightness, brightness);
         }
     }
 }
@@ -544,174 +280,6 @@ impl FunctionLayer {
             buttons,
             faster_refresh,
         }
-    }
-    fn draw(
-        &mut self,
-        config: &Config,
-        width: i32,
-        height: i32,
-        surface: &Surface,
-        pixel_shift: (f64, f64),
-        complete_redraw: bool,
-    ) -> Vec<ClipRect> {
-        let c = Context::new(surface).unwrap();
-        let mut modified_regions = if complete_redraw {
-            vec![ClipRect::new(0, 0, height as u16, width as u16)]
-        } else {
-            Vec::new()
-        };
-        c.translate(height as f64, 0.0);
-        c.rotate((90.0f64).to_radians());
-        let pixel_shift_width = if config.enable_pixel_shift {
-            PIXEL_SHIFT_WIDTH_PX
-        } else {
-            0
-        };
-        let n = self.buttons.len();
-        let total_spacing = BUTTON_SPACING_PX as f64 * (n - 1) as f64;
-        let available_width =
-            (width - pixel_shift_width as i32) as f64 - total_spacing;
-        let radius = 8.0f64;
-        let bot = (height as f64) * 0.15;
-        let top = (height as f64) * 0.85;
-        let (pixel_shift_x, pixel_shift_y) = pixel_shift;
-
-        if complete_redraw {
-            c.set_source_rgb(0.0, 0.0, 0.0);
-            c.paint().unwrap();
-        }
-        c.set_font_face(&config.font_face);
-        c.set_font_size(32.0);
-
-        let shift_offset = pixel_shift_x + (pixel_shift_width / 2) as f64;
-        let mut cursor = shift_offset;
-
-        for (width_frac, button) in &mut self.buttons {
-            let button_width = (available_width * *width_frac).floor();
-            let left_edge = cursor;
-
-            if !button.changed && !complete_redraw {
-                cursor += button_width + BUTTON_SPACING_PX as f64;
-                continue;
-            };
-
-            let color = if button.active {
-                BUTTON_COLOR_ACTIVE
-            } else if config.show_button_outlines {
-                BUTTON_COLOR_INACTIVE
-            } else {
-                0.0
-            };
-            if !complete_redraw {
-                c.set_source_rgb(0.0, 0.0, 0.0);
-                c.rectangle(
-                    left_edge,
-                    bot - radius,
-                    button_width,
-                    top - bot + radius * 2.0,
-                );
-                c.fill().unwrap();
-            }
-            if !matches!(button.image, ButtonImage::Spacer) {
-                button.set_background_color(&c, color);
-                // draw box with rounded corners
-                c.new_sub_path();
-                let left = left_edge + radius;
-                let right = (left_edge + button_width.ceil()) - radius;
-                c.arc(
-                    right,
-                    bot,
-                    radius,
-                    (-90.0f64).to_radians(),
-                    (0.0f64).to_radians(),
-                );
-                c.arc(
-                    right,
-                    top,
-                    radius,
-                    (0.0f64).to_radians(),
-                    (90.0f64).to_radians(),
-                );
-                c.arc(
-                    left,
-                    top,
-                    radius,
-                    (90.0f64).to_radians(),
-                    (180.0f64).to_radians(),
-                );
-                c.arc(
-                    left,
-                    bot,
-                    radius,
-                    (180.0f64).to_radians(),
-                    (270.0f64).to_radians(),
-                );
-                c.close_path();
-                c.fill().unwrap();
-            }
-            c.set_source_rgb(1.0, 1.0, 1.0);
-            button.render(
-                &c,
-                height,
-                left_edge,
-                button_width.ceil() as u64,
-                pixel_shift_y,
-            );
-
-            button.changed = false;
-
-            if !complete_redraw {
-                modified_regions.push(ClipRect::new(
-                    height as u16 - top as u16 - radius as u16,
-                    left_edge as u16,
-                    height as u16 - bot as u16 + radius as u16,
-                    left_edge as u16 + button_width as u16,
-                ));
-            }
-
-            cursor += button_width + BUTTON_SPACING_PX as f64;
-        }
-
-        modified_regions
-    }
-
-    fn hit(&self, width: u16, height: u16, x: f64, y: f64, i: Option<usize>) -> Option<usize> {
-        let n = self.buttons.len();
-        let total_spacing = BUTTON_SPACING_PX as f64 * (n - 1) as f64;
-        let available = width as f64 - total_spacing;
-
-        // Find which button index the x coordinate falls in
-        let i = i.unwrap_or_else(|| {
-            let mut cursor = 0.0;
-            for (j, (wf, _)) in self.buttons.iter().enumerate() {
-                let bw = (available * wf).floor();
-                if x < cursor + bw + BUTTON_SPACING_PX as f64 / 2.0 {
-                    return j;
-                }
-                cursor += bw + BUTTON_SPACING_PX as f64;
-            }
-            n - 1
-        });
-        if i >= n {
-            return None;
-        }
-
-        // Compute this button's left edge and width
-        let mut left_edge = 0.0;
-        for j in 0..i {
-            left_edge += (available * self.buttons[j].0).floor() + BUTTON_SPACING_PX as f64;
-        }
-        let button_width = (available * self.buttons[i].0).floor();
-
-        if x < left_edge
-            || x > (left_edge + button_width)
-            || y < 0.1 * height as f64
-            || y > 0.9 * height as f64
-        {
-            return None;
-        }
-
-        Some(i)
     }
 }
 
@@ -781,12 +349,12 @@ fn build_button_defs(layer: &FunctionLayer) -> Vec<ButtonDef> {
                         .format_localized_with_items(format.iter(), *locale)
                         .to_string()
                 }
-                ButtonImage::Battery(battery, _, _) => {
+                ButtonImage::Battery(battery) => {
                     let (capacity, _) = get_battery_state(battery);
                     format!("{capacity}%")
                 }
                 ButtonImage::Spacer => String::new(),
-                _ => "?".to_string(),
+                ButtonImage::Icon(_) => "?".to_string(),
             },
             active: b.active,
             width_fraction: *width_frac,
@@ -839,13 +407,10 @@ fn real_main(drm: &mut DrmBackend) {
         .apply()
         .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
 
-    let mut surface =
-        ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
-    let use_iced = std::env::var("TINY_DFR_ICED").is_ok();
     let mut iced_rndr = TouchbarRenderer::new(
         width as u32, height as u32, db_width as u32,
-        &cfg.iced_font_family, cfg.iced_font_size,
-        cfg.iced_font_bold, cfg.iced_font_italic,
+        &cfg.font_family, cfg.font_size,
+        cfg.font_bold, cfg.font_italic,
     );
     let mut active_layer = 0;
     let mut needs_complete_redraw = true;
@@ -901,7 +466,6 @@ fn real_main(drm: &mut DrmBackend) {
     uinput.dev_create().unwrap();
 
     let mut digitizer: Option<InputDevice> = None;
-    let mut touches = HashMap::new();
     let mut touch_positions: HashMap<u32, iced_core::Point> = HashMap::new();
     let mut last_redraw_ts = if layers[active_layer].faster_refresh {
         Local::now().second()
@@ -914,8 +478,8 @@ fn real_main(drm: &mut DrmBackend) {
             needs_complete_redraw = true;
             iced_rndr = TouchbarRenderer::new(
                 width as u32, height as u32, db_width as u32,
-                &cfg.iced_font_family, cfg.iced_font_size,
-                cfg.iced_font_bold, cfg.iced_font_italic,
+                &cfg.font_family, cfg.font_size,
+                cfg.font_bold, cfg.font_italic,
             );
         }
 
@@ -942,38 +506,21 @@ fn real_main(drm: &mut DrmBackend) {
         }
         if layers[active_layer].displays_battery {
             for button in &mut layers[active_layer].buttons {
-                if let ButtonImage::Battery(_, _, _) = button.1.image {
+                if let ButtonImage::Battery(_) = button.1.image {
                     button.1.changed = true;
                 }
             }
         }
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
-            if use_iced {
-                let btn_defs = build_button_defs(&layers[active_layer]);
-                let buffer = iced_rndr.render_to_buffer(&btn_defs);
-                drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
-                drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
-                needs_complete_redraw = false;
-            } else {
-                let shift = if cfg.enable_pixel_shift {
-                    pixel_shift.get()
-                } else {
-                    (0.0, 0.0)
-                };
-                let clips = layers[active_layer].draw(
-                    &cfg,
-                    width as i32,
-                    height as i32,
-                    &surface,
-                    shift,
-                    needs_complete_redraw,
-                );
-                let data = surface.data().unwrap();
-                drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
-                drm.dirty(&clips).unwrap();
-                needs_complete_redraw = false;
+            let btn_defs = build_button_defs(&layers[active_layer]);
+            let buffer = iced_rndr.render_to_buffer(&btn_defs);
+            drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
+            drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
+            for (_, btn) in &mut layers[active_layer].buttons {
+                btn.changed = false;
             }
+            needs_complete_redraw = false;
         }
 
         match epoll.wait(
@@ -1013,107 +560,69 @@ fn real_main(drm: &mut DrmBackend) {
                     if Some(te.device()) != digitizer || backlight.current_bl() == 0 {
                         continue;
                     }
-                    if use_iced {
-                        let (iced_event, cursor) = match &te {
-                            TouchEvent::Down(dn) => {
-                                let pos = iced_core::Point::new(
-                                    dn.x_transformed(width as u32) as f32,
-                                    dn.y_transformed(height as u32) as f32,
-                                );
-                                touch_positions.insert(dn.seat_slot(), pos);
-                                (
-                                    iced_core::Event::Touch(iced_core::touch::Event::FingerPressed {
-                                        id: iced_core::touch::Finger(dn.seat_slot() as u64),
-                                        position: pos,
-                                    }),
-                                    iced_core::mouse::Cursor::Available(pos),
-                                )
-                            }
-                            TouchEvent::Motion(mv) => {
-                                let pos = iced_core::Point::new(
-                                    mv.x_transformed(width as u32) as f32,
-                                    mv.y_transformed(height as u32) as f32,
-                                );
-                                touch_positions.insert(mv.seat_slot(), pos);
-                                (
-                                    iced_core::Event::Touch(iced_core::touch::Event::FingerMoved {
-                                        id: iced_core::touch::Finger(mv.seat_slot() as u64),
-                                        position: pos,
-                                    }),
-                                    iced_core::mouse::Cursor::Available(pos),
-                                )
-                            }
-                            TouchEvent::Up(up) => {
-                                let pos = touch_positions
-                                    .remove(&up.seat_slot())
-                                    .unwrap_or(iced_core::Point::ORIGIN);
-                                (
-                                    iced_core::Event::Touch(iced_core::touch::Event::FingerLifted {
-                                        id: iced_core::touch::Finger(up.seat_slot() as u64),
-                                        position: pos,
-                                    }),
-                                    iced_core::mouse::Cursor::Available(pos),
-                                )
-                            }
-                            _ => continue,
-                        };
-
-                        let btn_defs = build_button_defs(&layers[active_layer]);
-                        let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
-
-                        for msg in messages {
-                            match msg {
-                                IcedMessage::ButtonDown(i) => {
-                                    if i < layers[active_layer].buttons.len() {
-                                        layers[active_layer].buttons[i]
-                                            .1
-                                            .set_active(&mut uinput, true);
-                                    }
-                                }
-                                IcedMessage::ButtonUp(i) => {
-                                    if i < layers[active_layer].buttons.len() {
-                                        layers[active_layer].buttons[i]
-                                            .1
-                                            .set_active(&mut uinput, false);
-                                    }
-                                }
-                            }
+                    let (iced_event, cursor) = match &te {
+                        TouchEvent::Down(dn) => {
+                            let pos = iced_core::Point::new(
+                                dn.x_transformed(width as u32) as f32,
+                                dn.y_transformed(height as u32) as f32,
+                            );
+                            touch_positions.insert(dn.seat_slot(), pos);
+                            (
+                                iced_core::Event::Touch(iced_core::touch::Event::FingerPressed {
+                                    id: iced_core::touch::Finger(dn.seat_slot() as u64),
+                                    position: pos,
+                                }),
+                                iced_core::mouse::Cursor::Available(pos),
+                            )
                         }
-                    } else {
-                        match te {
-                            TouchEvent::Down(dn) => {
-                                let x = dn.x_transformed(width as u32);
-                                let y = dn.y_transformed(height as u32);
-                                if let Some(btn) =
-                                    layers[active_layer].hit(width, height, x, y, None)
-                                {
-                                    touches.insert(dn.seat_slot(), (active_layer, btn));
-                                    layers[active_layer].buttons[btn]
+                        TouchEvent::Motion(mv) => {
+                            let pos = iced_core::Point::new(
+                                mv.x_transformed(width as u32) as f32,
+                                mv.y_transformed(height as u32) as f32,
+                            );
+                            touch_positions.insert(mv.seat_slot(), pos);
+                            (
+                                iced_core::Event::Touch(iced_core::touch::Event::FingerMoved {
+                                    id: iced_core::touch::Finger(mv.seat_slot() as u64),
+                                    position: pos,
+                                }),
+                                iced_core::mouse::Cursor::Available(pos),
+                            )
+                        }
+                        TouchEvent::Up(up) => {
+                            let pos = touch_positions
+                                .remove(&up.seat_slot())
+                                .unwrap_or(iced_core::Point::ORIGIN);
+                            (
+                                iced_core::Event::Touch(iced_core::touch::Event::FingerLifted {
+                                    id: iced_core::touch::Finger(up.seat_slot() as u64),
+                                    position: pos,
+                                }),
+                                iced_core::mouse::Cursor::Available(pos),
+                            )
+                        }
+                        _ => continue,
+                    };
+
+                    let btn_defs = build_button_defs(&layers[active_layer]);
+                    let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
+
+                    for msg in messages {
+                        match msg {
+                            IcedMessage::ButtonDown(i) => {
+                                if i < layers[active_layer].buttons.len() {
+                                    layers[active_layer].buttons[i]
                                         .1
                                         .set_active(&mut uinput, true);
                                 }
                             }
-                            TouchEvent::Motion(mtn) => {
-                                if !touches.contains_key(&mtn.seat_slot()) {
-                                    continue;
+                            IcedMessage::ButtonUp(i) => {
+                                if i < layers[active_layer].buttons.len() {
+                                    layers[active_layer].buttons[i]
+                                        .1
+                                        .set_active(&mut uinput, false);
                                 }
-
-                                let x = mtn.x_transformed(width as u32);
-                                let y = mtn.y_transformed(height as u32);
-                                let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
-                                let hit = layers[active_layer]
-                                    .hit(width, height, x, y, Some(btn))
-                                    .is_some();
-                                layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
                             }
-                            TouchEvent::Up(up) => {
-                                if !touches.contains_key(&up.seat_slot()) {
-                                    continue;
-                                }
-                                let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
-                                layers[layer].buttons[btn].1.set_active(&mut uinput, false);
-                            }
-                            _ => {}
                         }
                     }
                 }

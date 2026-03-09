@@ -1,8 +1,5 @@
-use crate::fonts::{FontConfig, Pattern};
 use crate::FunctionLayer;
 use anyhow::Error;
-use cairo::FontFace;
-use freetype::Library as FtLibrary;
 use input_linux::Key;
 use nix::{
     errno::Errno,
@@ -28,13 +25,12 @@ fn user_cfg_path() -> &'static str {
 pub struct Config {
     pub show_button_outlines: bool,
     pub enable_pixel_shift: bool,
-    pub font_face: FontFace,
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
-    pub iced_font_family: String,
-    pub iced_font_size: f32,
-    pub iced_font_bold: bool,
-    pub iced_font_italic: bool,
+    pub font_family: String,
+    pub font_size: f32,
+    pub font_bold: bool,
+    pub font_italic: bool,
 }
 
 #[derive(Deserialize)]
@@ -43,7 +39,6 @@ struct ConfigProxy {
     media_layer_default: Option<bool>,
     show_button_outlines: Option<bool>,
     enable_pixel_shift: Option<bool>,
-    font_template: Option<String>,
     font_family: Option<String>,
     font_size: Option<f64>,
     font_style: Option<String>,
@@ -106,31 +101,14 @@ pub struct ButtonConfig {
     #[serde(alias = "Svg")]
     pub icon: Option<String>,
     pub text: Option<String>,
-    pub theme: Option<String>,
     pub time: Option<String>,
     pub battery: Option<String>,
     pub locale: Option<String>,
     #[serde(deserialize_with = "array_or_single", default)]
     pub action: Vec<Key>,
-    pub stretch: Option<usize>,
     pub width: Option<f64>,
     #[serde(default, deserialize_with = "parse_hex_color")]
     pub color: Option<(f64, f64, f64)>,
-}
-
-fn load_font(name: &str) -> FontFace {
-    let fontconfig = FontConfig::new();
-    let mut pattern = Pattern::new(name);
-    fontconfig.perform_substitutions(&mut pattern);
-    let pat_match = match fontconfig.match_pattern(&pattern) {
-        Ok(pat) => pat,
-        Err(_) => panic!("Unable to find specified font. If you are using the default config, make sure you have at least one font installed")
-    };
-    let file_name = pat_match.get_file_name();
-    let file_idx = pat_match.get_font_index();
-    let ft_library = FtLibrary::init().unwrap();
-    let face = ft_library.new_face(file_name, file_idx).unwrap();
-    FontFace::create_from_ft(&face).unwrap()
 }
 
 fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
@@ -144,7 +122,6 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
         base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
-        base.font_template = user.font_template.or(base.font_template);
         base.font_family = user.font_family.or(base.font_family);
         base.font_size = user.font_size.or(base.font_size);
         base.font_style = user.font_style.or(base.font_style);
@@ -162,9 +139,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                 ButtonConfig {
                     icon: None,
                     text: Some("esc".into()),
-                    theme: None,
                     action: vec![Key::Esc],
-                    stretch: None,
                     width: None,
                     color: None,
                     time: None,
@@ -182,21 +157,20 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         [fkey_layer, media_layer]
     };
     let font_style = base.font_style.as_deref().unwrap_or("");
-    let iced_font_bold = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("bold"));
-    let iced_font_italic = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("italic"));
+    let font_bold = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("bold"));
+    let font_italic = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("italic"));
     // Default bold to true if no FontStyle was specified (matches the ":bold" default FontTemplate)
-    let iced_font_bold = if base.font_style.is_none() { true } else { iced_font_bold };
+    let font_bold = if base.font_style.is_none() { true } else { font_bold };
 
     let cfg = Config {
         show_button_outlines: base.show_button_outlines.unwrap(),
         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
         adaptive_brightness: base.adaptive_brightness.unwrap(),
-        font_face: load_font(&base.font_template.unwrap()),
         active_brightness: base.active_brightness.unwrap(),
-        iced_font_family: base.font_family.unwrap_or_default(),
-        iced_font_size: base.font_size.unwrap_or(20.0) as f32,
-        iced_font_bold,
-        iced_font_italic,
+        font_family: base.font_family.unwrap_or_default(),
+        font_size: base.font_size.unwrap_or(20.0) as f32,
+        font_bold,
+        font_italic,
     };
     (cfg, layers)
 }
