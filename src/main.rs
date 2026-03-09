@@ -41,12 +41,14 @@ mod backlight;
 mod config;
 mod display;
 mod fonts;
+mod iced_renderer;
 mod pixel_shift;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
+use iced_renderer::TouchbarRenderer;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
 
 const BUTTON_SPACING_PX: i32 = 16;
@@ -806,6 +808,8 @@ fn real_main(drm: &mut DrmBackend) {
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
+    let use_iced = std::env::var("TINY_DFR_ICED").is_ok();
+    let mut iced_rndr = TouchbarRenderer::new(width as u32, height as u32, db_width as u32);
     let mut active_layer = 0;
     let mut needs_complete_redraw = true;
 
@@ -902,23 +906,30 @@ fn real_main(drm: &mut DrmBackend) {
         }
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
-            let shift = if cfg.enable_pixel_shift {
-                pixel_shift.get()
+            if use_iced {
+                let buffer = iced_rndr.render_to_buffer();
+                drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
+                drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
+                needs_complete_redraw = false;
             } else {
-                (0.0, 0.0)
-            };
-            let clips = layers[active_layer].draw(
-                &cfg,
-                width as i32,
-                height as i32,
-                &surface,
-                shift,
-                needs_complete_redraw,
-            );
-            let data = surface.data().unwrap();
-            drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
-            drm.dirty(&clips).unwrap();
-            needs_complete_redraw = false;
+                let shift = if cfg.enable_pixel_shift {
+                    pixel_shift.get()
+                } else {
+                    (0.0, 0.0)
+                };
+                let clips = layers[active_layer].draw(
+                    &cfg,
+                    width as i32,
+                    height as i32,
+                    &surface,
+                    shift,
+                    needs_complete_redraw,
+                );
+                let data = surface.data().unwrap();
+                drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
+                drm.dirty(&clips).unwrap();
+                needs_complete_redraw = false;
+            }
         }
 
         match epoll.wait(
