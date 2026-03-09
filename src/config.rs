@@ -31,6 +31,10 @@ pub struct Config {
     pub font_face: FontFace,
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
+    pub iced_font_family: String,
+    pub iced_font_size: f32,
+    pub iced_font_bold: bool,
+    pub iced_font_italic: bool,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +44,9 @@ struct ConfigProxy {
     show_button_outlines: Option<bool>,
     enable_pixel_shift: Option<bool>,
     font_template: Option<String>,
+    font_family: Option<String>,
+    font_size: Option<f64>,
+    font_style: Option<String>,
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
     primary_layer_keys: Option<Vec<ButtonConfig>>,
@@ -73,6 +80,26 @@ where
     deserializer.deserialize_any(ArrayOrSingle)
 }
 
+fn parse_hex_color<'de, D>(deserializer: D) -> Result<Option<(f64, f64, f64)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(s) => {
+            let hex = s.strip_prefix('#').unwrap_or(&s);
+            if hex.len() != 6 {
+                return Err(de::Error::custom("Color must be 6 hex digits, e.g. \"FF8800\""));
+            }
+            let r = u8::from_str_radix(&hex[0..2], 16).map_err(de::Error::custom)?;
+            let g = u8::from_str_radix(&hex[2..4], 16).map_err(de::Error::custom)?;
+            let b = u8::from_str_radix(&hex[4..6], 16).map_err(de::Error::custom)?;
+            Ok(Some((r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)))
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ButtonConfig {
@@ -86,6 +113,9 @@ pub struct ButtonConfig {
     #[serde(deserialize_with = "array_or_single", default)]
     pub action: Vec<Key>,
     pub stretch: Option<usize>,
+    pub width: Option<f64>,
+    #[serde(default, deserialize_with = "parse_hex_color")]
+    pub color: Option<(f64, f64, f64)>,
 }
 
 fn load_font(name: &str) -> FontFace {
@@ -115,6 +145,9 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
         base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
         base.font_template = user.font_template.or(base.font_template);
+        base.font_family = user.font_family.or(base.font_family);
+        base.font_size = user.font_size.or(base.font_size);
+        base.font_style = user.font_style.or(base.font_style);
         base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
         base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
@@ -132,6 +165,8 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     theme: None,
                     action: vec![Key::Esc],
                     stretch: None,
+                    width: None,
+                    color: None,
                     time: None,
                     locale: None,
                     battery: None,
@@ -146,12 +181,22 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
     } else {
         [fkey_layer, media_layer]
     };
+    let font_style = base.font_style.as_deref().unwrap_or("");
+    let iced_font_bold = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("bold"));
+    let iced_font_italic = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("italic"));
+    // Default bold to true if no FontStyle was specified (matches the ":bold" default FontTemplate)
+    let iced_font_bold = if base.font_style.is_none() { true } else { iced_font_bold };
+
     let cfg = Config {
         show_button_outlines: base.show_button_outlines.unwrap(),
         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
         adaptive_brightness: base.adaptive_brightness.unwrap(),
         font_face: load_font(&base.font_template.unwrap()),
         active_brightness: base.active_brightness.unwrap(),
+        iced_font_family: base.font_family.unwrap_or_default(),
+        iced_font_size: base.font_size.unwrap_or(20.0) as f32,
+        iced_font_bold,
+        iced_font_italic,
     };
     (cfg, layers)
 }

@@ -100,6 +100,7 @@ struct Button {
     changed: bool,
     active: bool,
     action: Vec<Key>,
+    color: Option<(f64, f64, f64)>,
 }
 
 fn try_load_svg(path: &str) -> Result<ButtonImage> {
@@ -245,7 +246,8 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
 
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
-        if let Some(text) = cfg.text {
+        let color = cfg.color;
+        let mut button = if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
         } else if let Some(icon) = cfg.icon {
             Button::new_icon(&icon, cfg.theme, cfg.action)
@@ -259,7 +261,9 @@ impl Button {
             }
         } else {
             Button::new_spacer()
-        }
+        };
+        button.color = color;
+        button
     }
     fn new_spacer() -> Button {
         Button {
@@ -267,6 +271,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Spacer,
+            color: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -275,6 +280,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Text(text),
+            color: None,
         }
     }
     fn new_icon(path: impl AsRef<str>, theme: Option<impl AsRef<str>>, action: Vec<Key>) -> Button {
@@ -284,6 +290,7 @@ impl Button {
             image,
             active: false,
             changed: false,
+            color: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -322,6 +329,7 @@ impl Button {
             image: ButtonImage::Battery(battery, battery_mode, BatteryImages {
                 plain, bolt, charging
             }),
+            color: None,
         }
     }
 
@@ -345,6 +353,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Time(format_items, locale),
+            color: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -474,16 +483,20 @@ impl Button {
             toggle_keys(uinput, &self.action, active as i32);
         }
     }
-    fn set_background_color(&self, c: &Context, color: f64) {
-        if let ButtonImage::Battery(battery, _, _) = &self.image {
+    fn set_background_color(&self, c: &Context, brightness: f64) {
+        if let Some((r, g, b)) = self.color {
+            // Scale the custom color by brightness (0.0 = black, 1.0 = full color)
+            let scale = brightness / BUTTON_COLOR_ACTIVE;
+            c.set_source_rgb(r * scale, g * scale, b * scale);
+        } else if let ButtonImage::Battery(battery, _, _) = &self.image {
             let (_, state) = get_battery_state(battery);
             match state {
-                BatteryState::NotCharging => c.set_source_rgb(color, color, color),
-                BatteryState::Charging => c.set_source_rgb(0.0, color, 0.0),
-                BatteryState::Low => c.set_source_rgb(color, 0.0, 0.0),
+                BatteryState::NotCharging => c.set_source_rgb(brightness, brightness, brightness),
+                BatteryState::Charging => c.set_source_rgb(0.0, brightness, 0.0),
+                BatteryState::Low => c.set_source_rgb(brightness, 0.0, 0.0),
             }
         } else {
-            c.set_source_rgb(color, color, color);
+            c.set_source_rgb(brightness, brightness, brightness);
         }
     }
 }
@@ -492,8 +505,8 @@ impl Button {
 pub struct FunctionLayer {
     displays_time: bool,
     displays_battery: bool,
-    buttons: Vec<(usize, Button)>,
-    virtual_button_count: usize,
+    /// Each entry is (width_fraction, Button) where width_fraction is 0.0–1.0
+    buttons: Vec<(f64, Button)>,
     faster_refresh: bool,
 }
 
@@ -503,28 +516,32 @@ impl FunctionLayer {
             panic!("Invalid configuration, layer has 0 buttons");
         }
 
-        let mut virtual_button_count = 0;
         let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
-        let buttons = cfg
+
+        // Compute width fractions. Buttons with an explicit Width (percentage)
+        // get that share; the rest split whatever remains equally.
+        let specified_total: f64 = cfg.iter().filter_map(|c| c.width).sum();
+        let unspecified_count = cfg.iter().filter(|c| c.width.is_none()).count();
+        let remaining = (100.0 - specified_total).max(0.0);
+        let default_width = if unspecified_count > 0 {
+            remaining / unspecified_count as f64
+        } else {
+            0.0
+        };
+
+        let buttons: Vec<(f64, Button)> = cfg
             .into_iter()
-            .scan(&mut virtual_button_count, |state, cfg| {
-                let i = **state;
-                let mut stretch = cfg.stretch.unwrap_or(1);
-                if stretch < 1 {
-                    println!("Stretch value must be at least 1, setting to 1.");
-                    stretch = 1;
-                }
-                **state += stretch;
-                Some((i, Button::with_config(cfg)))
+            .map(|c| {
+                let frac = c.width.unwrap_or(default_width) / 100.0;
+                (frac, Button::with_config(c))
             })
-            .collect::<Vec<_>>();
+            .collect();
         let faster_refresh = buttons.iter().any(|(_, b)| b.needs_faster_refresh());
         FunctionLayer {
             displays_time,
             displays_battery,
             buttons,
-            virtual_button_count,
             faster_refresh,
         }
     }
@@ -550,10 +567,10 @@ impl FunctionLayer {
         } else {
             0
         };
-        let virtual_button_width = ((width - pixel_shift_width as i32)
-            - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32))
-            as f64
-            / self.virtual_button_count as f64;
+        let n = self.buttons.len();
+        let total_spacing = BUTTON_SPACING_PX as f64 * (n - 1) as f64;
+        let available_width =
+            (width - pixel_shift_width as i32) as f64 - total_spacing;
         let radius = 8.0f64;
         let bot = (height as f64) * 0.15;
         let top = (height as f64) * 0.85;
@@ -566,27 +583,17 @@ impl FunctionLayer {
         c.set_font_face(&config.font_face);
         c.set_font_size(32.0);
 
-        for i in 0..self.buttons.len() {
-            let end = if i + 1 < self.buttons.len() {
-                self.buttons[i + 1].0
-            } else {
-                self.virtual_button_count
-            };
-            let (start, button) = &mut self.buttons[i];
-            let start = *start;
+        let shift_offset = pixel_shift_x + (pixel_shift_width / 2) as f64;
+        let mut cursor = shift_offset;
+
+        for (width_frac, button) in &mut self.buttons {
+            let button_width = (available_width * *width_frac).floor();
+            let left_edge = cursor;
 
             if !button.changed && !complete_redraw {
+                cursor += button_width + BUTTON_SPACING_PX as f64;
                 continue;
             };
-
-            let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                .floor()
-                + pixel_shift_x
-                + (pixel_shift_width / 2) as f64;
-
-            let button_width = virtual_button_width
-                + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                    .floor();
 
             let color = if button.active {
                 BUTTON_COLOR_ACTIVE
@@ -661,40 +668,40 @@ impl FunctionLayer {
                     left_edge as u16 + button_width as u16,
                 ));
             }
+
+            cursor += button_width + BUTTON_SPACING_PX as f64;
         }
 
         modified_regions
     }
 
     fn hit(&self, width: u16, height: u16, x: f64, y: f64, i: Option<usize>) -> Option<usize> {
-        let virtual_button_width =
-            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
-                / self.virtual_button_count as f64;
+        let n = self.buttons.len();
+        let total_spacing = BUTTON_SPACING_PX as f64 * (n - 1) as f64;
+        let available = width as f64 - total_spacing;
 
+        // Find which button index the x coordinate falls in
         let i = i.unwrap_or_else(|| {
-            let virtual_i = (x / (width as f64 / self.virtual_button_count as f64)) as usize;
-            self.buttons
-                .iter()
-                .position(|(start, _)| *start > virtual_i)
-                .unwrap_or(self.buttons.len())
-                - 1
+            let mut cursor = 0.0;
+            for (j, (wf, _)) in self.buttons.iter().enumerate() {
+                let bw = (available * wf).floor();
+                if x < cursor + bw + BUTTON_SPACING_PX as f64 / 2.0 {
+                    return j;
+                }
+                cursor += bw + BUTTON_SPACING_PX as f64;
+            }
+            n - 1
         });
-        if i >= self.buttons.len() {
+        if i >= n {
             return None;
         }
 
-        let start = self.buttons[i].0;
-        let end = if i + 1 < self.buttons.len() {
-            self.buttons[i + 1].0
-        } else {
-            self.virtual_button_count
-        };
-
-        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
-
-        let button_width = virtual_button_width
-            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                .floor();
+        // Compute this button's left edge and width
+        let mut left_edge = 0.0;
+        for j in 0..i {
+            left_edge += (available * self.buttons[j].0).floor() + BUTTON_SPACING_PX as f64;
+        }
+        let button_width = (available * self.buttons[i].0).floor();
 
         if x < left_edge
             || x > (left_edge + button_width)
@@ -766,7 +773,7 @@ fn build_button_defs(layer: &FunctionLayer) -> Vec<ButtonDef> {
     layer
         .buttons
         .iter()
-        .map(|(_, b)| ButtonDef {
+        .map(|(width_frac, b)| ButtonDef {
             label: match &b.image {
                 ButtonImage::Text(s) => s.clone(),
                 ButtonImage::Time(format, locale) => {
@@ -778,9 +785,12 @@ fn build_button_defs(layer: &FunctionLayer) -> Vec<ButtonDef> {
                     let (capacity, _) = get_battery_state(battery);
                     format!("{capacity}%")
                 }
+                ButtonImage::Spacer => String::new(),
                 _ => "?".to_string(),
             },
             active: b.active,
+            width_fraction: *width_frac,
+            color: b.color,
         })
         .collect()
 }
@@ -832,7 +842,11 @@ fn real_main(drm: &mut DrmBackend) {
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
     let use_iced = std::env::var("TINY_DFR_ICED").is_ok();
-    let mut iced_rndr = TouchbarRenderer::new(width as u32, height as u32, db_width as u32);
+    let mut iced_rndr = TouchbarRenderer::new(
+        width as u32, height as u32, db_width as u32,
+        &cfg.iced_font_family, cfg.iced_font_size,
+        cfg.iced_font_bold, cfg.iced_font_italic,
+    );
     let mut active_layer = 0;
     let mut needs_complete_redraw = true;
 
@@ -898,6 +912,11 @@ fn real_main(drm: &mut DrmBackend) {
         if cfg_mgr.update_config(&mut cfg, &mut layers, width) {
             active_layer = 0;
             needs_complete_redraw = true;
+            iced_rndr = TouchbarRenderer::new(
+                width as u32, height as u32, db_width as u32,
+                &cfg.iced_font_family, cfg.iced_font_size,
+                cfg.iced_font_bold, cfg.iced_font_italic,
+            );
         }
 
         let now = Local::now();

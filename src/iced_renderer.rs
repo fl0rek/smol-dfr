@@ -5,6 +5,7 @@ use iced_core::mouse;
 use iced_core::renderer;
 use iced_core::widget::Tree;
 use iced_core::Renderer as _;
+use iced_core::font::{Family, Stretch, Style, Weight};
 use iced_core::{
     Background, Color, Element, Font, Length, Pixels, Rectangle, Shell, Size, Theme,
 };
@@ -23,6 +24,10 @@ pub enum Message {
 pub struct ButtonDef {
     pub label: String,
     pub active: bool,
+    /// Fraction of available width (0.0–1.0) this button should occupy.
+    pub width_fraction: f64,
+    /// Optional custom background color as (r, g, b) in 0.0–1.0.
+    pub color: Option<(f64, f64, f64)>,
 }
 
 pub struct TouchbarRenderer {
@@ -35,17 +40,40 @@ pub struct TouchbarRenderer {
     fb_height: u32,
     /// Persistent widget tree — preserves mouse_area hover state across events
     tree: Option<Tree>,
+    font: Font,
+    font_size: f32,
 }
 
 impl TouchbarRenderer {
-    pub fn new(logical_width: u32, visible_height: u32, fb_height: u32) -> Self {
-        let renderer = IcedRenderer::new(Font::DEFAULT, Pixels(24.0));
+    pub fn new(
+        logical_width: u32,
+        visible_height: u32,
+        fb_height: u32,
+        font_family: &str,
+        font_size: f32,
+        font_bold: bool,
+        font_italic: bool,
+    ) -> Self {
+        let family = if font_family.is_empty() {
+            Family::SansSerif
+        } else {
+            Family::Name(font_family.to_string().leak())
+        };
+        let font = Font {
+            family,
+            weight: if font_bold { Weight::Bold } else { Weight::Normal },
+            style: if font_italic { Style::Italic } else { Style::Normal },
+            stretch: Stretch::Normal,
+        };
+        let renderer = IcedRenderer::new(font, Pixels(font_size));
         Self {
             renderer,
             logical_width,
             visible_height,
             fb_height,
             tree: None,
+            font,
+            font_size,
         }
     }
 
@@ -63,7 +91,7 @@ impl TouchbarRenderer {
     pub fn render_to_buffer(&mut self, buttons: &[ButtonDef]) -> Vec<u8> {
         self.renderer.clear();
 
-        let element = build_button_row(buttons);
+        let element = build_button_row(buttons, self.font, self.font_size);
         self.sync_tree(&element);
         // Take tree out of self to avoid split-borrow issues with self.renderer
         let mut tree = self.tree.take().unwrap();
@@ -173,7 +201,7 @@ impl TouchbarRenderer {
         cursor: mouse::Cursor,
         buttons: &[ButtonDef],
     ) -> Vec<Message> {
-        let mut element = build_button_row(buttons);
+        let mut element = build_button_row(buttons, self.font, self.font_size);
         self.sync_tree(&element);
         let mut tree = self.tree.take().unwrap();
 
@@ -212,7 +240,7 @@ impl TouchbarRenderer {
     }
 }
 
-fn build_button_row(buttons: &[ButtonDef]) -> Element<'_, Message, Theme, IcedRenderer> {
+fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Element<'_, Message, Theme, IcedRenderer> {
     let spacing = 4;
     let padding = 2;
 
@@ -220,33 +248,48 @@ fn build_button_row(buttons: &[ButtonDef]) -> Element<'_, Message, Theme, IcedRe
         .iter()
         .enumerate()
         .map(|(i, btn)| {
-            let bg_color = if btn.active { 0.4 } else { 0.2 };
+            let bg = match btn.color {
+                Some((r, g, b)) => {
+                    let scale = if btn.active { 1.0 } else { 0.5 };
+                    Color::from_rgb(r as f32 * scale, g as f32 * scale, b as f32 * scale)
+                }
+                None => {
+                    let v = if btn.active { 0.4 } else { 0.2 };
+                    Color::from_rgb(v, v, v)
+                }
+            };
+            let portion = (btn.width_fraction * 1000.0).round() as u16;
 
-            mouse_area(
-                container(
-                    text(btn.label.to_string())
-                        .size(20)
-                        .color(Color::WHITE)
-                        .align_x(alignment::Horizontal::Center)
-                        .align_y(alignment::Vertical::Center)
-                        .width(Length::Fill)
-                        .height(Length::Fill),
-                )
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .padding(padding)
-                .style(move |_theme: &Theme| container::Style {
-                    background: Some(Background::Color(Color::from_rgb(bg_color, bg_color, bg_color))),
-                    border: iced_core::Border {
-                        radius: 8.0.into(),
+            container(
+                mouse_area(
+                    container(
+                        text(btn.label.to_string())
+                            .font(font)
+                            .size(font_size)
+                            .color(Color::WHITE)
+                            .align_x(alignment::Horizontal::Center)
+                            .align_y(alignment::Vertical::Center)
+                            .width(Length::Fill)
+                            .height(Length::Fill),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(padding)
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(Background::Color(bg)),
+                        border: iced_core::Border {
+                            radius: 8.0.into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
-                }),
+                    }),
+                )
+                .on_press(Message::ButtonDown(i))
+                .on_release(Message::ButtonUp(i))
+                .on_exit(Message::ButtonUp(i))
             )
-            .on_press(Message::ButtonDown(i))
-            .on_release(Message::ButtonUp(i))
-            .on_exit(Message::ButtonUp(i))
+            .width(Length::FillPortion(portion))
+            .height(Length::Fill)
             .into()
         })
         .collect();
