@@ -62,8 +62,11 @@ enum ButtonImage {
     Icon(String),
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String),
+    Memory,
+    LoadAvg,
     Spacer,
     Workspaces,
+    WindowTitle,
 }
 
 struct Button {
@@ -131,6 +134,30 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
     (capacity, status)
 }
 
+fn get_load_avg() -> String {
+    let loadavg = fs::read_to_string("/proc/loadavg").unwrap_or_default();
+    loadavg.split_whitespace().next().unwrap_or("0.00").to_string()
+}
+
+fn get_memory_usage() -> u32 {
+    let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let mut total = 0u64;
+    let mut available = 0u64;
+    for line in meminfo.lines() {
+        if let Some(val) = line.strip_prefix("MemTotal:") {
+            total = val.trim().strip_suffix(" kB").unwrap_or(val.trim())
+                .trim().parse().unwrap_or(0);
+        } else if let Some(val) = line.strip_prefix("MemAvailable:") {
+            available = val.trim().strip_suffix(" kB").unwrap_or(val.trim())
+                .trim().parse().unwrap_or(0);
+        }
+    }
+    if total == 0 {
+        return 0;
+    }
+    ((total - available) * 100 / total) as u32
+}
+
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
         let color = cfg.color;
@@ -146,12 +173,36 @@ impl Button {
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
             }
+        } else if cfg.memory == Some(true) {
+            Button {
+                action: vec![],
+                active: false,
+                changed: false,
+                image: ButtonImage::Memory,
+                color: None,
+            }
+        } else if cfg.load_avg == Some(true) {
+            Button {
+                action: vec![],
+                active: false,
+                changed: false,
+                image: ButtonImage::LoadAvg,
+                color: None,
+            }
         } else if cfg.workspaces == Some(true) {
             Button {
                 action: vec![],
                 active: false,
                 changed: false,
                 image: ButtonImage::Workspaces,
+                color: None,
+            }
+        } else if cfg.window_title == Some(true) {
+            Button {
+                action: vec![],
+                active: false,
+                changed: false,
+                image: ButtonImage::WindowTitle,
                 color: None,
             }
         } else {
@@ -252,6 +303,8 @@ impl Button {
 pub struct FunctionLayer {
     displays_time: bool,
     displays_battery: bool,
+    displays_memory: bool,
+    displays_load_avg: bool,
     /// Each entry is (width_fraction, Button) where width_fraction is 0.0–1.0
     buttons: Vec<(f64, Button)>,
     faster_refresh: bool,
@@ -265,6 +318,8 @@ impl FunctionLayer {
 
         let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
+        let displays_memory = cfg.iter().any(|cfg| cfg.memory == Some(true));
+        let displays_load_avg = cfg.iter().any(|cfg| cfg.load_avg == Some(true));
 
         // Compute width fractions. Buttons with an explicit Width (percentage)
         // get that share; the rest split whatever remains equally.
@@ -288,6 +343,8 @@ impl FunctionLayer {
         FunctionLayer {
             displays_time,
             displays_battery,
+            displays_memory,
+            displays_load_avg,
             buttons,
             faster_refresh,
         }
@@ -381,6 +438,18 @@ fn build_button_defs(
                     });
                 }
             }
+            ButtonImage::WindowTitle => {
+                let title = ws
+                    .and_then(|(mgr, _)| mgr.focused_window_title())
+                    .unwrap_or_default();
+                defs.push(ButtonDef {
+                    label: title,
+                    active: false,
+                    width_fraction: *width_frac,
+                    color: b.color,
+                    action: ButtonAction::None,
+                });
+            }
             ButtonImage::Spacer => {
                 defs.push(ButtonDef {
                     label: String::new(),
@@ -403,6 +472,11 @@ fn build_button_defs(
                             let (capacity, _) = get_battery_state(battery);
                             format!("{capacity}%")
                         }
+                        ButtonImage::Memory => {
+                            let usage = get_memory_usage();
+                            format!("{usage}%")
+                        }
+                        ButtonImage::LoadAvg => get_load_avg(),
                         ButtonImage::Icon(_) => "?".to_string(),
                         _ => unreachable!(),
                     },
@@ -575,6 +649,20 @@ fn real_main(drm: &mut DrmBackend) {
         if layers[active_layer].displays_battery {
             for button in &mut layers[active_layer].buttons {
                 if let ButtonImage::Battery(_) = button.1.image {
+                    button.1.changed = true;
+                }
+            }
+        }
+        if layers[active_layer].displays_memory {
+            for button in &mut layers[active_layer].buttons {
+                if let ButtonImage::Memory = button.1.image {
+                    button.1.changed = true;
+                }
+            }
+        }
+        if layers[active_layer].displays_load_avg {
+            for button in &mut layers[active_layer].buttons {
+                if let ButtonImage::LoadAvg = button.1.image {
                     button.1.changed = true;
                 }
             }

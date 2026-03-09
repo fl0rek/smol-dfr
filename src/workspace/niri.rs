@@ -1,12 +1,15 @@
 use super::{WorkspaceBackend, WorkspaceInfo};
 use niri_ipc::{Action, Event, Request, Response, WorkspaceReferenceArg};
 use niri_ipc::socket::Socket;
+use std::collections::HashMap;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 struct SharedState {
     workspaces: Vec<WorkspaceInfo>,
+    windows: HashMap<u64, Option<String>>,
+    focused_window_id: Option<u64>,
     changed: bool,
 }
 
@@ -87,6 +90,8 @@ impl NiriBackend {
 
         let state = Arc::new(Mutex::new(SharedState {
             workspaces: Vec::new(),
+            windows: HashMap::new(),
+            focused_window_id: None,
             changed: false,
         }));
 
@@ -160,6 +165,35 @@ impl NiriBackend {
                 }
                 true
             }
+            Event::WindowsChanged { windows } => {
+                s.windows.clear();
+                s.focused_window_id = None;
+                for w in windows {
+                    s.windows.insert(w.id, w.title.clone());
+                    if w.is_focused {
+                        s.focused_window_id = Some(w.id);
+                    }
+                }
+                true
+            }
+            Event::WindowOpenedOrChanged { window } => {
+                s.windows.insert(window.id, window.title.clone());
+                if window.is_focused {
+                    s.focused_window_id = Some(window.id);
+                }
+                true
+            }
+            Event::WindowClosed { id } => {
+                s.windows.remove(id);
+                if s.focused_window_id == Some(*id) {
+                    s.focused_window_id = None;
+                }
+                true
+            }
+            Event::WindowFocusChanged { id } => {
+                s.focused_window_id = *id;
+                true
+            }
             _ => false,
         };
 
@@ -194,6 +228,14 @@ impl WorkspaceBackend for NiriBackend {
             Err(e) => eprintln!("Failed to send FocusWorkspace: {e}"),
             _ => {}
         }
+    }
+
+    fn focused_window_title(&self) -> Option<String> {
+        let state = self.state.lock().unwrap();
+        state
+            .focused_window_id
+            .and_then(|id| state.windows.get(&id))
+            .and_then(|title| title.clone())
     }
 
     fn event_fd(&self) -> BorrowedFd<'_> {

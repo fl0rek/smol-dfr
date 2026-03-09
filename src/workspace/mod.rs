@@ -22,6 +22,9 @@ pub(crate) trait WorkspaceBackend: Send {
     /// Request focus on a workspace by id.
     fn focus_workspace(&self, id: u64);
 
+    /// Get the title of the currently focused window, if any.
+    fn focused_window_title(&self) -> Option<String>;
+
     /// Fd to register with epoll (readable when state may have changed).
     fn event_fd(&self) -> BorrowedFd<'_>;
 }
@@ -62,6 +65,10 @@ impl WorkspaceManager {
 
     pub fn focus_workspace(&self, id: u64) {
         self.backend.focus_workspace(id);
+    }
+
+    pub fn focused_window_title(&self) -> Option<String> {
+        self.backend.focused_window_title()
     }
 
     pub fn event_fd(&self) -> BorrowedFd<'_> {

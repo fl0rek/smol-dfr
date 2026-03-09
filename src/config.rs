@@ -152,6 +152,9 @@ pub struct ButtonConfig {
     #[serde(default, deserialize_with = "parse_hex_color")]
     pub color: Option<(f64, f64, f64)>,
     pub workspaces: Option<bool>,
+    pub window_title: Option<bool>,
+    pub memory: Option<bool>,
+    pub load_avg: Option<bool>,
 }
 
 fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
@@ -190,6 +193,9 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     locale: None,
                     battery: None,
                     workspaces: None,
+                    window_title: None,
+                    memory: None,
+                    load_avg: None,
                 },
             );
         }
