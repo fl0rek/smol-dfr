@@ -19,6 +19,15 @@ type IcedRenderer = iced_tiny_skia::Renderer;
 pub enum Message {
     ButtonDown(usize),
     ButtonUp(usize),
+    WorkspaceDown(u64),
+    WorkspaceUp(u64),
+}
+
+#[derive(Debug, Clone)]
+pub enum ButtonAction {
+    LayerButton(usize),
+    Workspace(u64),
+    None,
 }
 
 pub struct ButtonDef {
@@ -28,6 +37,7 @@ pub struct ButtonDef {
     pub width_fraction: f64,
     /// Optional custom background color as (r, g, b) in 0.0–1.0.
     pub color: Option<(f64, f64, f64)>,
+    pub action: ButtonAction,
 }
 
 pub struct TouchbarRenderer {
@@ -246,8 +256,7 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
 
     let children: Vec<Element<'_, Message, Theme, IcedRenderer>> = buttons
         .iter()
-        .enumerate()
-        .map(|(i, btn)| {
+        .map(|btn| {
             let bg = match btn.color {
                 Some((r, g, b)) => {
                     let scale = if btn.active { 1.0 } else { 0.5 };
@@ -260,37 +269,52 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
             };
             let portion = (btn.width_fraction * 1000.0).round() as u16;
 
-            container(
-                mouse_area(
-                    container(
-                        text(btn.label.to_string())
-                            .font(font)
-                            .size(font_size)
-                            .color(Color::WHITE)
-                            .align_x(alignment::Horizontal::Center)
-                            .align_y(alignment::Vertical::Center)
-                            .width(Length::Fill)
-                            .height(Length::Fill),
-                    )
+            let inner = container(
+                text(btn.label.to_string())
+                    .font(font)
+                    .size(font_size)
+                    .color(Color::WHITE)
+                    .align_x(alignment::Horizontal::Center)
+                    .align_y(alignment::Vertical::Center)
                     .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(padding)
-                    .style(move |_theme: &Theme| container::Style {
-                        background: Some(Background::Color(bg)),
-                        border: iced_core::Border {
-                            radius: 8.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-                )
-                .on_press(Message::ButtonDown(i))
-                .on_release(Message::ButtonUp(i))
-                .on_exit(Message::ButtonUp(i))
+                    .height(Length::Fill),
             )
-            .width(Length::FillPortion(portion))
+            .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .padding(padding)
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(Background::Color(bg)),
+                border: iced_core::Border {
+                    radius: 8.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+            let wrapped: Element<'_, Message, Theme, IcedRenderer> = match &btn.action {
+                ButtonAction::LayerButton(idx) => {
+                    let idx = *idx;
+                    mouse_area(inner)
+                        .on_press(Message::ButtonDown(idx))
+                        .on_release(Message::ButtonUp(idx))
+                        .on_exit(Message::ButtonUp(idx))
+                        .into()
+                }
+                ButtonAction::Workspace(id) => {
+                    let id = *id;
+                    mouse_area(inner)
+                        .on_press(Message::WorkspaceDown(id))
+                        .on_release(Message::WorkspaceUp(id))
+                        .on_exit(Message::WorkspaceUp(id))
+                        .into()
+                }
+                ButtonAction::None => inner.into(),
+            };
+
+            container(wrapped)
+                .width(Length::FillPortion(portion))
+                .height(Length::Fill)
+                .into()
         })
         .collect();
 

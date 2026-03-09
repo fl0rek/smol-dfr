@@ -11,6 +11,46 @@ use serde::{
 };
 use std::{fmt, fs::read_to_string, os::fd::AsFd, path::Path};
 
+fn parse_color_str(s: &str) -> Option<(f64, f64, f64)> {
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0))
+}
+
+#[derive(Clone)]
+pub struct WorkspacesConfig {
+    pub provider: Option<String>,
+    pub active_color: (f64, f64, f64),
+    pub urgent_color: (f64, f64, f64),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct WorkspacesConfigProxy {
+    provider: Option<String>,
+    active_color: Option<String>,
+    urgent_color: Option<String>,
+}
+
+impl From<WorkspacesConfigProxy> for WorkspacesConfig {
+    fn from(p: WorkspacesConfigProxy) -> Self {
+        Self {
+            provider: p.provider,
+            active_color: p.active_color
+                .and_then(|c| parse_color_str(&c))
+                .unwrap_or((0.149, 0.545, 0.824)), // solarized blue
+            urgent_color: p.urgent_color
+                .and_then(|c| parse_color_str(&c))
+                .unwrap_or((0.863, 0.196, 0.184)), // solarized red
+        }
+    }
+}
+
 const LOCAL_CFG_PATH: &str = "config.toml";
 const SYSTEM_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
 
@@ -31,6 +71,7 @@ pub struct Config {
     pub font_size: f32,
     pub font_bold: bool,
     pub font_italic: bool,
+    pub workspaces: Option<WorkspacesConfig>,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +87,7 @@ struct ConfigProxy {
     active_brightness: Option<u32>,
     primary_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
+    workspaces: Option<WorkspacesConfigProxy>,
 }
 
 fn array_or_single<'de, D>(deserializer: D) -> Result<Vec<Key>, D::Error>
@@ -109,6 +151,7 @@ pub struct ButtonConfig {
     pub width: Option<f64>,
     #[serde(default, deserialize_with = "parse_hex_color")]
     pub color: Option<(f64, f64, f64)>,
+    pub workspaces: Option<bool>,
 }
 
 fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
@@ -129,6 +172,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
         base.active_brightness = user.active_brightness.or(base.active_brightness);
+        base.workspaces = user.workspaces.or(base.workspaces);
     };
     let mut media_layer_keys = base.media_layer_keys.unwrap();
     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
@@ -145,6 +189,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     time: None,
                     locale: None,
                     battery: None,
+                    workspaces: None,
                 },
             );
         }
@@ -171,6 +216,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         font_size: base.font_size.unwrap_or(20.0) as f32,
         font_bold,
         font_italic,
+        workspaces: base.workspaces.map(Into::into),
     };
     (cfg, layers)
 }

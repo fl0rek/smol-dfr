@@ -38,13 +38,15 @@ mod config;
 mod display;
 mod iced_renderer;
 mod pixel_shift;
+mod workspace;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
-use config::ButtonConfig;
+use config::{ButtonConfig, WorkspacesConfig};
 use display::DrmBackend;
-use iced_renderer::{ButtonDef, Message as IcedMessage, TouchbarRenderer};
+use iced_renderer::{ButtonAction, ButtonDef, Message as IcedMessage, TouchbarRenderer};
 use pixel_shift::PixelShiftManager;
+use workspace::WorkspaceManager;
 
 const TIMEOUT_MS: i32 = 10 * 1000;
 
@@ -61,6 +63,7 @@ enum ButtonImage {
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String),
     Spacer,
+    Workspaces,
 }
 
 struct Button {
@@ -142,6 +145,14 @@ impl Button {
                 Button::new_battery(cfg.action, battery, battery_mode)
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
+            }
+        } else if cfg.workspaces == Some(true) {
+            Button {
+                action: vec![],
+                active: false,
+                changed: false,
+                image: ButtonImage::Workspaces,
+                color: None,
             }
         } else {
             Button::new_spacer()
@@ -337,30 +348,73 @@ where
     );
 }
 
-fn build_button_defs(layer: &FunctionLayer) -> Vec<ButtonDef> {
-    layer
-        .buttons
-        .iter()
-        .map(|(width_frac, b)| ButtonDef {
-            label: match &b.image {
-                ButtonImage::Text(s) => s.clone(),
-                ButtonImage::Time(format, locale) => {
-                    Local::now()
-                        .format_localized_with_items(format.iter(), *locale)
-                        .to_string()
+fn build_button_defs(
+    layer: &FunctionLayer,
+    ws: Option<(&WorkspaceManager, &WorkspacesConfig)>,
+) -> Vec<ButtonDef> {
+    let mut defs = Vec::new();
+    for (idx, (width_frac, b)) in layer.buttons.iter().enumerate() {
+        match &b.image {
+            ButtonImage::Workspaces => {
+                let workspaces = ws
+                    .map(|(mgr, _)| mgr.workspaces())
+                    .unwrap_or_default();
+                if workspaces.is_empty() {
+                    continue;
                 }
-                ButtonImage::Battery(battery) => {
-                    let (capacity, _) = get_battery_state(battery);
-                    format!("{capacity}%")
+                let ws_cfg = ws.map(|(_, c)| c);
+                let per_ws = width_frac / workspaces.len() as f64;
+                for w in &workspaces {
+                    let color = if w.is_urgent {
+                        ws_cfg.map(|c| c.urgent_color)
+                    } else if w.is_focused {
+                        ws_cfg.map(|c| c.active_color)
+                    } else {
+                        None
+                    };
+                    defs.push(ButtonDef {
+                        label: w.name.clone().unwrap_or_else(|| w.idx.to_string()),
+                        active: w.is_focused,
+                        width_fraction: per_ws,
+                        color,
+                        action: ButtonAction::Workspace(w.id),
+                    });
                 }
-                ButtonImage::Spacer => String::new(),
-                ButtonImage::Icon(_) => "?".to_string(),
-            },
-            active: b.active,
-            width_fraction: *width_frac,
-            color: b.color,
-        })
-        .collect()
+            }
+            ButtonImage::Spacer => {
+                defs.push(ButtonDef {
+                    label: String::new(),
+                    active: false,
+                    width_fraction: *width_frac,
+                    color: b.color,
+                    action: ButtonAction::None,
+                });
+            }
+            _ => {
+                defs.push(ButtonDef {
+                    label: match &b.image {
+                        ButtonImage::Text(s) => s.clone(),
+                        ButtonImage::Time(format, locale) => {
+                            Local::now()
+                                .format_localized_with_items(format.iter(), *locale)
+                                .to_string()
+                        }
+                        ButtonImage::Battery(battery) => {
+                            let (capacity, _) = get_battery_state(battery);
+                            format!("{capacity}%")
+                        }
+                        ButtonImage::Icon(_) => "?".to_string(),
+                        _ => unreachable!(),
+                    },
+                    active: b.active,
+                    width_fraction: *width_frac,
+                    color: b.color,
+                    action: ButtonAction::LayerButton(idx),
+                });
+            }
+        }
+    }
+    defs
 }
 
 fn main() {
@@ -397,6 +451,15 @@ fn real_main(drm: &mut DrmBackend) {
     let mut cfg_mgr = ConfigManager::new();
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
+
+    // Connect to workspace provider before dropping privileges
+    let workspace_mgr = cfg.workspaces.as_ref().and_then(|ws_cfg| {
+        eprintln!("Workspaces config present, provider={:?}", ws_cfg.provider);
+        WorkspaceManager::try_new(ws_cfg.provider.as_deref())
+    });
+    if workspace_mgr.is_none() && cfg.workspaces.is_some() {
+        eprintln!("Warning: [Workspaces] configured but no provider available (is $NIRI_SOCKET set?)");
+    }
 
     // drop privileges to input and video group
     let groups = ["input", "video"];
@@ -438,6 +501,11 @@ fn real_main(drm: &mut DrmBackend) {
     epoll
         .add(&udev_monitor, EpollEvent::new(EpollFlags::EPOLLIN, 3))
         .unwrap();
+    if let Some(ref mgr) = workspace_mgr {
+        epoll
+            .add(mgr.event_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 4))
+            .unwrap();
+    }
     uinput.set_evbit(EventKind::Key).unwrap();
     for layer in &layers {
         for button in &layer.buttons {
@@ -513,7 +581,8 @@ fn real_main(drm: &mut DrmBackend) {
         }
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
-            let btn_defs = build_button_defs(&layers[active_layer]);
+            let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
+            let btn_defs = build_button_defs(&layers[active_layer], ws);
             let buffer = iced_rndr.render_to_buffer(&btn_defs);
             drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
@@ -532,6 +601,12 @@ fn real_main(drm: &mut DrmBackend) {
         };
 
         _ = udev_monitor.iter().last();
+
+        if let Some(ref mgr) = workspace_mgr {
+            if mgr.poll() {
+                needs_complete_redraw = true;
+            }
+        }
 
         input_tb.dispatch().unwrap();
         input_main.dispatch().unwrap();
@@ -604,7 +679,8 @@ fn real_main(drm: &mut DrmBackend) {
                         _ => continue,
                     };
 
-                    let btn_defs = build_button_defs(&layers[active_layer]);
+                    let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
+                    let btn_defs = build_button_defs(&layers[active_layer], ws);
                     let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
 
                     for msg in messages {
@@ -621,6 +697,14 @@ fn real_main(drm: &mut DrmBackend) {
                                     layers[active_layer].buttons[i]
                                         .1
                                         .set_active(&mut uinput, false);
+                                }
+                            }
+                            IcedMessage::WorkspaceDown(_) => {
+                                needs_complete_redraw = true;
+                            }
+                            IcedMessage::WorkspaceUp(id) => {
+                                if let Some(ref mgr) = workspace_mgr {
+                                    mgr.focus_workspace(id);
                                 }
                             }
                         }

@@ -23,6 +23,7 @@ toml = "0.8"
 rand = "0.8"
 chrono = { version = "0.4", features = ["unstable-locales"] }
 udev = "0.9"
+niri-ipc = "=25.11.0"
 iced_tiny_skia = "0.13"
 iced_core = "0.13"
 iced_widget = "0.13"
