@@ -48,7 +48,7 @@ use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
-use iced_renderer::TouchbarRenderer;
+use iced_renderer::{ButtonDef, Message as IcedMessage, TouchbarRenderer};
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
 
 const BUTTON_SPACING_PX: i32 = 16;
@@ -762,6 +762,29 @@ where
     );
 }
 
+fn build_button_defs(layer: &FunctionLayer) -> Vec<ButtonDef> {
+    layer
+        .buttons
+        .iter()
+        .map(|(_, b)| ButtonDef {
+            label: match &b.image {
+                ButtonImage::Text(s) => s.clone(),
+                ButtonImage::Time(format, locale) => {
+                    Local::now()
+                        .format_localized_with_items(format.iter(), *locale)
+                        .to_string()
+                }
+                ButtonImage::Battery(battery, _, _) => {
+                    let (capacity, _) = get_battery_state(battery);
+                    format!("{capacity}%")
+                }
+                _ => "?".to_string(),
+            },
+            active: b.active,
+        })
+        .collect()
+}
+
 fn main() {
     let mut drm = DrmBackend::open_card().unwrap();
     let (height, width) = drm.mode().size();
@@ -865,6 +888,7 @@ fn real_main(drm: &mut DrmBackend) {
 
     let mut digitizer: Option<InputDevice> = None;
     let mut touches = HashMap::new();
+    let mut touch_positions: HashMap<u32, iced_core::Point> = HashMap::new();
     let mut last_redraw_ts = if layers[active_layer].faster_refresh {
         Local::now().second()
     } else {
@@ -907,7 +931,8 @@ fn real_main(drm: &mut DrmBackend) {
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             if use_iced {
-                let buffer = iced_rndr.render_to_buffer();
+                let btn_defs = build_button_defs(&layers[active_layer]);
+                let buffer = iced_rndr.render_to_buffer(&btn_defs);
                 drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
                 drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
                 needs_complete_redraw = false;
@@ -969,38 +994,108 @@ fn real_main(drm: &mut DrmBackend) {
                     if Some(te.device()) != digitizer || backlight.current_bl() == 0 {
                         continue;
                     }
-                    match te {
-                        TouchEvent::Down(dn) => {
-                            let x = dn.x_transformed(width as u32);
-                            let y = dn.y_transformed(height as u32);
-                            if let Some(btn) = layers[active_layer].hit(width, height, x, y, None) {
-                                touches.insert(dn.seat_slot(), (active_layer, btn));
-                                layers[active_layer].buttons[btn]
-                                    .1
-                                    .set_active(&mut uinput, true);
+                    if use_iced {
+                        let (iced_event, cursor) = match &te {
+                            TouchEvent::Down(dn) => {
+                                let pos = iced_core::Point::new(
+                                    dn.x_transformed(width as u32) as f32,
+                                    dn.y_transformed(height as u32) as f32,
+                                );
+                                touch_positions.insert(dn.seat_slot(), pos);
+                                (
+                                    iced_core::Event::Touch(iced_core::touch::Event::FingerPressed {
+                                        id: iced_core::touch::Finger(dn.seat_slot() as u64),
+                                        position: pos,
+                                    }),
+                                    iced_core::mouse::Cursor::Available(pos),
+                                )
                             }
-                        }
-                        TouchEvent::Motion(mtn) => {
-                            if !touches.contains_key(&mtn.seat_slot()) {
-                                continue;
+                            TouchEvent::Motion(mv) => {
+                                let pos = iced_core::Point::new(
+                                    mv.x_transformed(width as u32) as f32,
+                                    mv.y_transformed(height as u32) as f32,
+                                );
+                                touch_positions.insert(mv.seat_slot(), pos);
+                                (
+                                    iced_core::Event::Touch(iced_core::touch::Event::FingerMoved {
+                                        id: iced_core::touch::Finger(mv.seat_slot() as u64),
+                                        position: pos,
+                                    }),
+                                    iced_core::mouse::Cursor::Available(pos),
+                                )
                             }
+                            TouchEvent::Up(up) => {
+                                let pos = touch_positions
+                                    .remove(&up.seat_slot())
+                                    .unwrap_or(iced_core::Point::ORIGIN);
+                                (
+                                    iced_core::Event::Touch(iced_core::touch::Event::FingerLifted {
+                                        id: iced_core::touch::Finger(up.seat_slot() as u64),
+                                        position: pos,
+                                    }),
+                                    iced_core::mouse::Cursor::Available(pos),
+                                )
+                            }
+                            _ => continue,
+                        };
 
-                            let x = mtn.x_transformed(width as u32);
-                            let y = mtn.y_transformed(height as u32);
-                            let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
-                            let hit = layers[active_layer]
-                                .hit(width, height, x, y, Some(btn))
-                                .is_some();
-                            layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
-                        }
-                        TouchEvent::Up(up) => {
-                            if !touches.contains_key(&up.seat_slot()) {
-                                continue;
+                        let btn_defs = build_button_defs(&layers[active_layer]);
+                        let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
+
+                        for msg in messages {
+                            match msg {
+                                IcedMessage::ButtonDown(i) => {
+                                    if i < layers[active_layer].buttons.len() {
+                                        layers[active_layer].buttons[i]
+                                            .1
+                                            .set_active(&mut uinput, true);
+                                    }
+                                }
+                                IcedMessage::ButtonUp(i) => {
+                                    if i < layers[active_layer].buttons.len() {
+                                        layers[active_layer].buttons[i]
+                                            .1
+                                            .set_active(&mut uinput, false);
+                                    }
+                                }
                             }
-                            let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
-                            layers[layer].buttons[btn].1.set_active(&mut uinput, false);
                         }
-                        _ => {}
+                    } else {
+                        match te {
+                            TouchEvent::Down(dn) => {
+                                let x = dn.x_transformed(width as u32);
+                                let y = dn.y_transformed(height as u32);
+                                if let Some(btn) =
+                                    layers[active_layer].hit(width, height, x, y, None)
+                                {
+                                    touches.insert(dn.seat_slot(), (active_layer, btn));
+                                    layers[active_layer].buttons[btn]
+                                        .1
+                                        .set_active(&mut uinput, true);
+                                }
+                            }
+                            TouchEvent::Motion(mtn) => {
+                                if !touches.contains_key(&mtn.seat_slot()) {
+                                    continue;
+                                }
+
+                                let x = mtn.x_transformed(width as u32);
+                                let y = mtn.y_transformed(height as u32);
+                                let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
+                                let hit = layers[active_layer]
+                                    .hit(width, height, x, y, Some(btn))
+                                    .is_some();
+                                layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                            }
+                            TouchEvent::Up(up) => {
+                                if !touches.contains_key(&up.seat_slot()) {
+                                    continue;
+                                }
+                                let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
+                                layers[layer].buttons[btn].1.set_active(&mut uinput, false);
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}

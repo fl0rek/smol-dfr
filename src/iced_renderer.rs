@@ -1,17 +1,29 @@
 use iced_core::alignment;
+use iced_core::clipboard;
 use iced_core::layout::{Layout, Limits};
 use iced_core::mouse;
 use iced_core::renderer;
 use iced_core::widget::Tree;
 use iced_core::Renderer as _;
 use iced_core::{
-    Background, Color, Element, Font, Length, Pixels, Rectangle, Size, Theme,
+    Background, Color, Element, Font, Length, Pixels, Rectangle, Shell, Size, Theme,
 };
 use iced_graphics::Viewport;
-use iced_widget::{container, row, text};
+use iced_widget::{container, mouse_area, row, text};
 use tiny_skia::Pixmap;
 
 type IcedRenderer = iced_tiny_skia::Renderer;
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    ButtonDown(usize),
+    ButtonUp(usize),
+}
+
+pub struct ButtonDef {
+    pub label: String,
+    pub active: bool,
+}
 
 pub struct TouchbarRenderer {
     renderer: IcedRenderer,
@@ -21,10 +33,9 @@ pub struct TouchbarRenderer {
     visible_height: u32,
     /// Framebuffer short axis (64) — used for pixmap/rotation buffer size
     fb_height: u32,
+    /// Persistent widget tree — preserves mouse_area hover state across events
+    tree: Option<Tree>,
 }
-
-#[derive(Debug, Clone)]
-pub enum Message {}
 
 impl TouchbarRenderer {
     pub fn new(logical_width: u32, visible_height: u32, fb_height: u32) -> Self {
@@ -34,33 +45,31 @@ impl TouchbarRenderer {
             logical_width,
             visible_height,
             fb_height,
+            tree: None,
         }
     }
 
-    /// Build the POC widget tree, render it to a pixmap, and return the
+    /// Sync the persistent tree with the current widget structure.
+    /// Preserves compatible state (e.g. mouse_area hover tracking).
+    fn sync_tree(&mut self, element: &Element<'_, Message, Theme, IcedRenderer>) {
+        match &mut self.tree {
+            Some(tree) => element.as_widget().diff(tree),
+            slot @ None => *slot = Some(Tree::new(element.as_widget())),
+        }
+    }
+
+    /// Build the widget tree, render it to a pixmap, and return the
     /// rotated XRGB8888 buffer ready for the DRM framebuffer.
-    ///
-    /// Layout, draw, and pixel flush all happen in one call so that the widget
-    /// Tree (which owns the Paragraph state) stays alive while the renderer
-    /// flushes text via Weak references.
-    pub fn render_to_buffer(&mut self) -> Vec<u8> {
+    pub fn render_to_buffer(&mut self, buttons: &[ButtonDef]) -> Vec<u8> {
         self.renderer.clear();
 
-        let labels = [
-            "esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-        ];
-
-        let element = build_button_row(&labels);
-        let mut tree = Tree::new(element.as_widget());
-        element.as_widget().diff(&mut tree);
+        let element = build_button_row(buttons);
+        self.sync_tree(&element);
+        // Take tree out of self to avoid split-borrow issues with self.renderer
+        let mut tree = self.tree.take().unwrap();
 
         let w = self.logical_width;
-        // Layout uses visible_height (≈60) so content fits in the visible area.
-        // Cairo does the same: it draws in (width x height) logical space where
-        // height = mode height ≈ 60, not the framebuffer's 64.
         let vis_h = self.visible_height;
-        // The pixmap and rotation output use fb_height (64) to match the DRM
-        // dumb buffer dimensions.
         let fb_h = self.fb_height;
 
         let limits = Limits::new(
@@ -76,7 +85,6 @@ impl TouchbarRenderer {
             text_color: Color::WHITE,
         };
         let cursor = mouse::Cursor::Unavailable;
-        // Viewport covers only the visible area so widgets are clipped correctly
         let viewport_rect = Rectangle {
             x: 0.0,
             y: 0.0,
@@ -95,13 +103,9 @@ impl TouchbarRenderer {
         );
 
         // Flush to pixmap while tree (and its Paragraphs) is still alive.
-        // Pixmap uses fb_height so the rotation output fills the full
-        // framebuffer stride. Content only occupies the first vis_h rows;
-        // the remaining (fb_h - vis_h) rows stay black.
         let mut pixmap = Pixmap::new(w, fb_h).expect("Failed to create pixmap");
         let mut clip_mask = tiny_skia::Mask::new(w, fb_h).expect("Failed to create clip mask");
         let viewport = Viewport::with_physical_size(Size::new(w, fb_h), 1.0);
-        // Damage only the visible area
         let damage = [viewport_rect];
 
         self.renderer.draw(
@@ -113,15 +117,9 @@ impl TouchbarRenderer {
             &[] as &[&str],
         );
 
+        self.tree = Some(tree);
+
         // Rotate 90 CW: landscape pixmap (w, fb_h) -> portrait buffer (fb_h, w)
-        //
-        // Cairo's rotation: c.translate(height, 0); c.rotate(90deg)
-        // maps logical (lx, ly) -> framebuffer (height - ly, lx)
-        // where height = visible_height ≈ 60.
-        //
-        // Our CW rotation maps (sx, sy) -> (fb_h - 1 - sy, sx).
-        // Content at sy=0 maps to dx=fb_h-1=63, sy=vis_h-1=59 maps to dx=4.
-        // That leaves dx=0..3 black, matching Cairo which leaves fb X>height black.
         //
         // To match Cairo exactly (content at dx=0..height-1, black at dx>=height):
         //   dx = visible_height - 1 - sy   (for sy < vis_h, skip sy >= vis_h)
@@ -166,41 +164,95 @@ impl TouchbarRenderer {
 
         rotated
     }
+
+    /// Process a touch event through the iced widget tree.
+    /// Returns messages produced by widget interactions (ButtonDown/ButtonUp).
+    pub fn process_touch(
+        &mut self,
+        iced_event: iced_core::Event,
+        cursor: mouse::Cursor,
+        buttons: &[ButtonDef],
+    ) -> Vec<Message> {
+        let mut element = build_button_row(buttons);
+        self.sync_tree(&element);
+        let mut tree = self.tree.take().unwrap();
+
+        let w = self.logical_width;
+        let vis_h = self.visible_height;
+
+        let limits = Limits::new(
+            Size::ZERO,
+            Size::new(w as f32, vis_h as f32),
+        );
+        let node = element.as_widget().layout(&mut tree, &self.renderer, &limits);
+        let layout = Layout::new(&node);
+
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        let viewport = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: w as f32,
+            height: vis_h as f32,
+        };
+
+        element.as_widget_mut().on_event(
+            &mut tree,
+            iced_event,
+            layout,
+            cursor,
+            &self.renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            &viewport,
+        );
+
+        self.tree = Some(tree);
+        messages
+    }
 }
 
-fn build_button_row<'a>(labels: &'a [&'a str]) -> Element<'a, Message, Theme, IcedRenderer> {
+fn build_button_row(buttons: &[ButtonDef]) -> Element<'_, Message, Theme, IcedRenderer> {
     let spacing = 4;
     let padding = 2;
 
-    let buttons: Vec<Element<'_, Message, Theme, IcedRenderer>> = labels
+    let children: Vec<Element<'_, Message, Theme, IcedRenderer>> = buttons
         .iter()
-        .map(|label| {
-            container(
-                text(label.to_string())
-                    .size(20)
-                    .color(Color::WHITE)
-                    .align_x(alignment::Horizontal::Center)
-                    .align_y(alignment::Vertical::Center)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(padding)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Background::Color(Color::from_rgb(0.2, 0.2, 0.2))),
-                border: iced_core::Border {
-                    radius: 8.0.into(),
+        .enumerate()
+        .map(|(i, btn)| {
+            let bg_color = if btn.active { 0.4 } else { 0.2 };
+
+            mouse_area(
+                container(
+                    text(btn.label.to_string())
+                        .size(20)
+                        .color(Color::WHITE)
+                        .align_x(alignment::Horizontal::Center)
+                        .align_y(alignment::Vertical::Center)
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(padding)
+                .style(move |_theme: &Theme| container::Style {
+                    background: Some(Background::Color(Color::from_rgb(bg_color, bg_color, bg_color))),
+                    border: iced_core::Border {
+                        radius: 8.0.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            })
+                }),
+            )
+            .on_press(Message::ButtonDown(i))
+            .on_release(Message::ButtonUp(i))
+            .on_exit(Message::ButtonUp(i))
             .into()
         })
         .collect();
 
     container(
-        row(buttons)
+        row(children)
             .spacing(spacing)
             .height(Length::Fill)
             .width(Length::Fill),

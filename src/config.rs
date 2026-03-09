@@ -12,9 +12,18 @@ use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer,
 };
-use std::{fmt, fs::read_to_string, os::fd::AsFd};
+use std::{fmt, fs::read_to_string, os::fd::AsFd, path::Path};
 
-const USER_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
+const LOCAL_CFG_PATH: &str = "config.toml";
+const SYSTEM_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
+
+fn user_cfg_path() -> &'static str {
+    if Path::new(LOCAL_CFG_PATH).exists() {
+        LOCAL_CFG_PATH
+    } else {
+        SYSTEM_CFG_PATH
+    }
+}
 
 pub struct Config {
     pub show_button_outlines: bool,
@@ -98,7 +107,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
     let mut base =
         toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
             .unwrap();
-    let user = read_to_string(USER_CFG_PATH)
+    let user = read_to_string(user_cfg_path())
         .map_err::<Error, _>(|e| e.into())
         .and_then(|r| Ok(toml::from_str::<ConfigProxy>(&r)?));
     if let Ok(user) = user {
@@ -154,7 +163,7 @@ pub struct ConfigManager {
 
 fn arm_inotify(inotify_fd: &Inotify) -> Option<WatchDescriptor> {
     let flags = AddWatchFlags::IN_MOVED_TO | AddWatchFlags::IN_CLOSE | AddWatchFlags::IN_ONESHOT;
-    match inotify_fd.add_watch(USER_CFG_PATH, flags) {
+    match inotify_fd.add_watch(user_cfg_path(), flags) {
         Ok(wd) => Some(wd),
         Err(Errno::ENOENT) => None,
         e => Some(e.unwrap()),
