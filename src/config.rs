@@ -104,8 +104,8 @@ struct ConfigProxy {
     font_style: Option<String>,
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
-    primary_layer_keys: Option<Vec<ButtonConfig>>,
-    media_layer_keys: Option<Vec<ButtonConfig>>,
+    primary_layer_keys: Option<Vec<WidgetEntry>>,
+    media_layer_keys: Option<Vec<WidgetEntry>>,
     workspaces: Option<WorkspacesConfigProxy>,
     volume: Option<VolumeConfigProxy>,
 }
@@ -157,32 +157,51 @@ where
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
+#[serde(tag = "Type", rename_all = "snake_case")]
+pub enum WidgetConfig {
+    #[serde(rename_all = "PascalCase")]
+    Text { text: String },
+    #[serde(rename_all = "PascalCase")]
+    Icon {
+        icon: String,
+        theme: Option<String>,
+    },
+    #[serde(rename_all = "PascalCase")]
+    Time {
+        format: String,
+        locale: Option<String>,
+    },
+    #[serde(rename_all = "PascalCase")]
+    Battery { mode: String },
+    Temperature,
+    #[serde(rename = "load_avg")]
+    LoadAvg,
+    #[serde(rename_all = "PascalCase")]
+    Memory {
+        sample_interval: Option<u32>,
+        graph_window: Option<u32>,
+    },
+    Workspaces,
+    #[serde(rename = "window_title")]
+    WindowTitle,
+    Volume,
+    Spacer,
+}
+
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
-pub struct ButtonConfig {
-    #[serde(alias = "Svg")]
-    pub icon: Option<String>,
-    pub theme: Option<String>,
-    pub text: Option<String>,
-    pub time: Option<String>,
-    pub battery: Option<String>,
-    pub locale: Option<String>,
-    #[serde(deserialize_with = "array_or_single", default)]
+pub struct WidgetEntry {
+    #[serde(default, deserialize_with = "array_or_single")]
     pub action: Vec<Key>,
     pub width: Option<f64>,
     #[serde(default, deserialize_with = "parse_hex_color")]
     pub color: Option<(f64, f64, f64)>,
-    pub workspaces: Option<bool>,
-    pub window_title: Option<bool>,
-    pub memory: Option<bool>,
-    pub load_avg: Option<bool>,
-    pub temperature: Option<bool>,
-    pub volume: Option<bool>,
-    pub sample_interval: Option<u32>,
-    pub graph_window: Option<u32>,
+    #[serde(flatten)]
+    pub widget: WidgetConfig,
 }
 
-fn load_config(width: u16) -> Result<(Config, [Vec<ButtonConfig>; 2]), String> {
+fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     // System config failure is fatal -- this is an installation problem
     let mut base =
         toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
@@ -218,24 +237,11 @@ fn load_config(width: u16) -> Result<(Config, [Vec<ButtonConfig>; 2]), String> {
         for layer in [&mut media_layer_keys, &mut primary_layer_keys] {
             layer.insert(
                 0,
-                ButtonConfig {
-                    icon: None,
-                    theme: None,
-                    text: Some("esc".into()),
+                WidgetEntry {
                     action: vec![Key::Esc],
                     width: None,
                     color: None,
-                    time: None,
-                    locale: None,
-                    battery: None,
-                    workspaces: None,
-                    window_title: None,
-                    memory: None,
-                    load_avg: None,
-                    temperature: None,
-                    volume: None,
-                    sample_interval: None,
-                    graph_window: None,
+                    widget: WidgetConfig::Text { text: "esc".into() },
                 },
             );
         }
@@ -300,13 +306,13 @@ impl ConfigManager {
             had_error: false,
         }
     }
-    pub fn load_config(&self, width: u16) -> Result<(Config, [Vec<ButtonConfig>; 2]), String> {
+    pub fn load_config(&self, width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         load_config(width)
     }
     pub fn update_config(
         &mut self,
         cfg: &mut Config,
-        layers: &mut [Vec<ButtonConfig>; 2],
+        layers: &mut [Vec<WidgetEntry>; 2],
         width: u16,
     ) -> bool {
         if self.watch_desc.is_none() {
@@ -319,7 +325,7 @@ impl ConfigManager {
         }
     }
     #[cold]
-    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [Vec<ButtonConfig>; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
+    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [Vec<WidgetEntry>; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
         let mut ret = false;
         for evt in evts.unwrap_or_default() {
             if Some(evt.wd) != self.watch_desc {
