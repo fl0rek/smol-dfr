@@ -11,13 +11,15 @@ struct SharedState {
     windows: HashMap<u64, Option<String>>,
     focused_window_id: Option<u64>,
     changed: bool,
+    connected: bool,
+    reconnect_flash: bool,
 }
 
 pub struct NiriBackend {
     state: Arc<Mutex<SharedState>>,
     event_fd: OwnedFd,
-    cmd_socket: Mutex<Socket>,
-    _reader_thread: JoinHandle<()>,
+    cmd_socket: Mutex<Option<Socket>>,
+    reader_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 fn create_eventfd() -> OwnedFd {
@@ -37,6 +39,13 @@ fn signal_eventfd(fd: &OwnedFd) {
     }
 }
 
+fn signal_eventfd_raw(fd: i32) {
+    let val: u64 = 1;
+    unsafe {
+        libc::write(fd, &val as *const u64 as *const libc::c_void, 8);
+    }
+}
+
 fn drain_eventfd(fd: &OwnedFd) {
     let mut val: u64 = 0;
     unsafe {
@@ -49,63 +58,117 @@ fn drain_eventfd(fd: &OwnedFd) {
 }
 
 impl NiriBackend {
-    pub fn try_new() -> Option<Self> {
-        let mut event_socket: Socket = match Socket::connect() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed to connect to niri socket: {e}");
-                return None;
-            }
-        };
-
-        let cmd_socket = match Socket::connect() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed to connect to niri command socket: {e}");
-                return None;
-            }
-        };
-
-        match event_socket.send(Request::EventStream) {
-            Ok(Ok(Response::Handled)) => {}
-            Ok(Ok(other)) => {
-                eprintln!("Unexpected niri EventStream response: {other:?}");
-                return None;
-            }
-            Ok(Err(msg)) => {
-                eprintln!("niri EventStream error: {msg}");
-                return None;
-            }
-            Err(e) => {
-                eprintln!("Failed to start niri event stream: {e}");
-                return None;
-            }
-        }
-
+    /// Create a new NiriBackend in disconnected state.
+    /// Always succeeds -- does NOT attempt to connect.
+    /// Call `try_connect()` to establish the connection.
+    pub fn new() -> Self {
         let event_fd = create_eventfd();
-        let thread_event_fd =
-            unsafe { OwnedFd::from_raw_fd(libc::dup(event_fd.as_raw_fd())) };
-
-        eprintln!("niri workspace: connected");
-
         let state = Arc::new(Mutex::new(SharedState {
             workspaces: Vec::new(),
             windows: HashMap::new(),
             focused_window_id: None,
             changed: false,
+            connected: false,
+            reconnect_flash: false,
         }));
 
-        let thread_state = Arc::clone(&state);
+        Self {
+            state,
+            event_fd,
+            cmd_socket: Mutex::new(None),
+            reader_thread: Mutex::new(None),
+        }
+    }
+
+    /// Attempt to connect to the niri socket.
+    /// Re-discovers the socket path, establishes event and command connections,
+    /// spawns the reader thread.
+    /// Returns true on success, false on failure (logged to stderr).
+    pub fn try_connect(&self) -> bool {
+        // Discover socket path
+        let uid = unsafe { libc::getuid() };
+        let socket_path = match crate::session_detect::discover_niri_socket(uid) {
+            Some(path) => path,
+            None => {
+                eprintln!("niri workspace: no socket found for uid {uid}");
+                return false;
+            }
+        };
+
+        // Update env var so niri_ipc::socket::Socket::connect() finds it
+        // Safety: we are the only thread that calls this, and niri_ipc reads
+        // NIRI_SOCKET synchronously during Socket::connect().
+        unsafe { std::env::set_var("NIRI_SOCKET", &socket_path) };
+
+        // Connect event socket
+        let mut event_socket = match Socket::connect() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("niri workspace: failed to connect event socket: {e}");
+                return false;
+            }
+        };
+
+        // Request event stream
+        match event_socket.send(Request::EventStream) {
+            Ok(Ok(Response::Handled)) => {}
+            Ok(Ok(other)) => {
+                eprintln!("niri workspace: unexpected EventStream response: {other:?}");
+                return false;
+            }
+            Ok(Err(msg)) => {
+                eprintln!("niri workspace: EventStream error: {msg}");
+                return false;
+            }
+            Err(e) => {
+                eprintln!("niri workspace: failed to start event stream: {e}");
+                return false;
+            }
+        }
+
+        // Connect command socket
+        let cmd_socket = match Socket::connect() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("niri workspace: failed to connect command socket: {e}");
+                return false;
+            }
+        };
+
+        // Store the new command socket
+        *self.cmd_socket.lock().unwrap() = Some(cmd_socket);
+
+        // Join old reader thread if any
+        {
+            let mut thread_guard = self.reader_thread.lock().unwrap();
+            if let Some(old_thread) = thread_guard.take() {
+                let _ = old_thread.join();
+            }
+        }
+
+        // Dup eventfd for the new thread
+        let thread_event_fd =
+            unsafe { OwnedFd::from_raw_fd(libc::dup(self.event_fd.as_raw_fd())) };
+
+        // Mark connected, set flash, signal
+        {
+            let mut s = self.state.lock().unwrap();
+            s.connected = true;
+            s.reconnect_flash = true;
+            s.changed = true;
+        }
+        signal_eventfd(&self.event_fd);
+
+        // Spawn new reader thread
+        let thread_state = Arc::clone(&self.state);
         let reader_thread = thread::spawn(move || {
             Self::event_reader(event_socket, thread_state, thread_event_fd);
         });
 
-        Some(Self {
-            state,
-            event_fd,
-            cmd_socket: Mutex::new(cmd_socket),
-            _reader_thread: reader_thread,
-        })
+        *self.reader_thread.lock().unwrap() = Some(reader_thread);
+
+        eprintln!("niri workspace: connected");
+        true
     }
 
     fn event_reader(
@@ -118,7 +181,16 @@ impl NiriBackend {
             match read_event() {
                 Ok(event) => Self::handle_event(&event, &state, &event_fd),
                 Err(e) => {
-                    eprintln!("niri event stream disconnected: {e}");
+                    eprintln!("niri workspace: disconnected: {e}");
+                    // Clear state on disconnect
+                    let mut s = state.lock().unwrap();
+                    s.connected = false;
+                    s.workspaces.clear();
+                    s.windows.clear();
+                    s.focused_window_id = None;
+                    s.changed = true;
+                    drop(s);
+                    signal_eventfd(&event_fd);
                     break;
                 }
             }
@@ -219,7 +291,11 @@ impl WorkspaceBackend for NiriBackend {
     }
 
     fn focus_workspace(&self, id: u64) {
-        let mut socket = self.cmd_socket.lock().unwrap();
+        let mut socket_guard = self.cmd_socket.lock().unwrap();
+        let socket = match socket_guard.as_mut() {
+            Some(s) => s,
+            None => return, // Disconnected -- silently ignore
+        };
         match socket.send(Request::Action(Action::FocusWorkspace {
             reference: WorkspaceReferenceArg::Id(id),
         })) {
@@ -240,5 +316,22 @@ impl WorkspaceBackend for NiriBackend {
 
     fn event_fd(&self) -> BorrowedFd<'_> {
         self.event_fd.as_fd()
+    }
+
+    fn is_connected(&self) -> bool {
+        self.state.lock().unwrap().connected
+    }
+
+    fn try_connect(&self) -> bool {
+        NiriBackend::try_connect(self)
+    }
+
+    fn has_reconnect_flash(&self) -> bool {
+        let mut s = self.state.lock().unwrap();
+        let flash = s.reconnect_flash;
+        if flash {
+            s.reconnect_flash = false;
+        }
+        flash
     }
 }

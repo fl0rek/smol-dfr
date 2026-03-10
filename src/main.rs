@@ -795,22 +795,25 @@ fn real_main(drm: &mut DrmBackend) {
         }
     }
 
-    // Connect to workspace provider after dropping privileges and setting env
-    let workspace_mgr = cfg.workspaces.as_ref().and_then(|ws_cfg| {
+    // Create workspace manager (always-on, starts disconnected) if configured
+    let workspace_mgr = cfg.workspaces.as_ref().map(|ws_cfg| {
         eprintln!("Workspaces config present, provider={:?}", ws_cfg.provider);
-        WorkspaceManager::try_new(ws_cfg.provider.as_deref())
+        let mgr = WorkspaceManager::new(ws_cfg.provider.as_deref());
+        if !mgr.try_connect() {
+            eprintln!("Warning: [Workspaces] configured but could not connect (will reconnect when available)");
+        }
+        mgr
     });
-    if workspace_mgr.is_none() && cfg.workspaces.is_some() {
-        eprintln!("Warning: [Workspaces] configured but no provider available (is $NIRI_SOCKET set?)");
-    }
 
-    let volume_mgr = cfg.volume.as_ref().and_then(|vol_cfg| {
+    // Create volume manager (always-on, starts disconnected) if configured
+    let volume_mgr = cfg.volume.as_ref().map(|vol_cfg| {
         eprintln!("Volume config present, pulse_server={:?}", vol_cfg.pulse_server);
-        VolumeManager::try_new(vol_cfg.pulse_server.as_deref())
+        let mgr = VolumeManager::new(vol_cfg.pulse_server.as_deref());
+        if !mgr.try_connect() {
+            eprintln!("Warning: [Volume] configured but could not connect (will reconnect when available)");
+        }
+        mgr
     });
-    if volume_mgr.is_none() && cfg.volume.is_some() {
-        eprintln!("Warning: [Volume] configured but PulseAudio not available");
-    }
 
     let mut iced_rndr = TouchbarRenderer::new(
         width as u32, height as u32, db_width as u32,

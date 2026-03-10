@@ -27,6 +27,17 @@ pub(crate) trait WorkspaceBackend: Send {
 
     /// Fd to register with epoll (readable when state may have changed).
     fn event_fd(&self) -> BorrowedFd<'_>;
+
+    /// Whether the backend is currently connected to its service.
+    fn is_connected(&self) -> bool;
+
+    /// Attempt to connect (or reconnect) to the service.
+    /// Returns true on success.
+    fn try_connect(&self) -> bool;
+
+    /// Check and clear the reconnect flash flag.
+    /// Returns true once after a successful reconnection.
+    fn has_reconnect_flash(&self) -> bool;
 }
 
 pub struct WorkspaceManager {
@@ -34,24 +45,12 @@ pub struct WorkspaceManager {
 }
 
 impl WorkspaceManager {
-    /// Try to create a workspace manager based on provider hint and environment.
-    /// Returns None if no suitable provider is available.
-    pub fn try_new(provider: Option<&str>) -> Option<Self> {
-        match provider.unwrap_or("auto") {
-            "niri" => niri::NiriBackend::try_new()
-                .map(|b| Self { backend: Box::new(b) }),
-            "auto" => {
-                if std::env::var("NIRI_SOCKET").is_ok() {
-                    niri::NiriBackend::try_new()
-                        .map(|b| Self { backend: Box::new(b) })
-                } else {
-                    None
-                }
-            }
-            other => {
-                eprintln!("Unknown workspace provider: {other}");
-                None
-            }
+    /// Create a workspace manager. Always succeeds, starting in disconnected state.
+    /// The manager will connect when `try_connect()` is called.
+    pub fn new(_provider: Option<&str>) -> Self {
+        // Niri is the only supported compositor; always create NiriBackend.
+        Self {
+            backend: Box::new(niri::NiriBackend::new()),
         }
     }
 
@@ -73,5 +72,20 @@ impl WorkspaceManager {
 
     pub fn event_fd(&self) -> BorrowedFd<'_> {
         self.backend.event_fd()
+    }
+
+    /// Whether the backend is currently connected to its service.
+    pub fn is_connected(&self) -> bool {
+        self.backend.is_connected()
+    }
+
+    /// Attempt to connect (or reconnect) to the service.
+    pub fn try_connect(&self) -> bool {
+        self.backend.try_connect()
+    }
+
+    /// Check and clear the reconnect flash flag.
+    pub fn has_reconnect_flash(&self) -> bool {
+        self.backend.has_reconnect_flash()
     }
 }
