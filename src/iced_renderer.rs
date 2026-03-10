@@ -15,6 +15,7 @@ use tiny_skia::Pixmap;
 
 use crate::battery_icon_widget::BatteryIconWidget;
 use crate::memory_graph_widget::MemoryGraphWidget;
+use crate::widgets::{self, RenderContext, Widget, Message as WidgetMessage};
 
 type IcedRenderer = iced_tiny_skia::Renderer;
 
@@ -73,8 +74,10 @@ pub struct TouchbarRenderer {
     visible_height: u32,
     /// Framebuffer short axis (64) — used for pixmap/rotation buffer size
     fb_height: u32,
-    /// Persistent widget tree — preserves mouse_area hover state across events
+    /// Persistent widget tree for the old ButtonDef rendering path
     tree: Option<Tree>,
+    /// Persistent widget tree for the new Widget rendering path
+    widget_tree: Option<Tree>,
     font: Font,
     font_size: f32,
 }
@@ -107,40 +110,36 @@ impl TouchbarRenderer {
             visible_height,
             fb_height,
             tree: None,
+            widget_tree: None,
             font,
             font_size,
         }
     }
 
-    /// Sync the persistent tree with the current widget structure.
-    /// Preserves compatible state (e.g. mouse_area hover tracking).
-    fn sync_tree(&mut self, element: &Element<'_, Message, Theme, IcedRenderer>) {
-        match &mut self.tree {
+    /// Sync a persistent tree with a widget structure.
+    fn sync_tree_slot<M: 'static>(
+        slot: &mut Option<Tree>,
+        element: &Element<'_, M, Theme, IcedRenderer>,
+    ) {
+        match slot {
             Some(tree) => element.as_widget().diff(tree),
             slot @ None => *slot = Some(Tree::new(element.as_widget())),
         }
     }
 
-    /// Build the widget tree, render it to a pixmap, and return the
-    /// rotated XRGB8888 buffer ready for the DRM framebuffer.
-    pub fn render_to_buffer(&mut self, buttons: &[ButtonDef]) -> Vec<u8> {
-        self.renderer.clear();
-
-        let element = build_button_row(buttons, self.font, self.font_size);
-        self.sync_tree(&element);
-        // Take tree out of self to avoid split-borrow issues with self.renderer
-        let mut tree = self.tree.take().unwrap();
-
+    /// Shared layout+draw+rotate pipeline used by both rendering paths.
+    /// Takes a prepared element and its synced tree, renders to a rotated XRGB8888 buffer.
+    fn render_element<M: 'static>(
+        &mut self,
+        element: &Element<'_, M, Theme, IcedRenderer>,
+        tree: &mut Tree,
+    ) -> Vec<u8> {
         let w = self.logical_width;
         let vis_h = self.visible_height;
         let fb_h = self.fb_height;
 
-        let limits = Limits::new(
-            Size::ZERO,
-            Size::new(w as f32, vis_h as f32),
-        );
-
-        let node = element.as_widget().layout(&mut tree, &self.renderer, &limits);
+        let limits = Limits::new(Size::ZERO, Size::new(w as f32, vis_h as f32));
+        let node = element.as_widget().layout(tree, &self.renderer, &limits);
         let layout = Layout::new(&node);
 
         let theme = Theme::KanagawaDragon;
@@ -156,7 +155,7 @@ impl TouchbarRenderer {
         };
 
         element.as_widget().draw(
-            &tree,
+            tree,
             &mut self.renderer,
             &theme,
             &style,
@@ -165,9 +164,10 @@ impl TouchbarRenderer {
             &viewport_rect,
         );
 
-        // Flush to pixmap while tree (and its Paragraphs) is still alive.
+        // Flush to pixmap
         let mut pixmap = Pixmap::new(w, fb_h).expect("Failed to create pixmap");
-        let mut clip_mask = tiny_skia::Mask::new(w, fb_h).expect("Failed to create clip mask");
+        let mut clip_mask =
+            tiny_skia::Mask::new(w, fb_h).expect("Failed to create clip mask");
         let viewport = Viewport::with_physical_size(Size::new(w, fb_h), 1.0);
         let damage = [viewport_rect];
 
@@ -180,12 +180,7 @@ impl TouchbarRenderer {
             &[] as &[&str],
         );
 
-        self.tree = Some(tree);
-
         // Rotate 90 CW: landscape pixmap (w, fb_h) -> portrait buffer (fb_h, w)
-        //
-        // To match Cairo exactly (content at dx=0..height-1, black at dx>=height):
-        //   dx = visible_height - 1 - sy   (for sy < vis_h, skip sy >= vis_h)
         let dst_w = fb_h as usize;
         let dst_h = w as usize;
         let src_data = pixmap.data();
@@ -198,7 +193,6 @@ impl TouchbarRenderer {
                 let dy = sx;
                 let dst_idx = (dy * dst_w + dx) * 4;
 
-                // tiny-skia stores premultiplied RGBA; DRM expects XRGB8888
                 let r = src_data[src_idx];
                 let g = src_data[src_idx + 1];
                 let b = src_data[src_idx + 2];
@@ -217,7 +211,6 @@ impl TouchbarRenderer {
                     )
                 };
 
-                // XRGB8888 little-endian: byte order is B, G, R, X
                 rotated[dst_idx] = b;
                 rotated[dst_idx + 1] = g;
                 rotated[dst_idx + 2] = r;
@@ -228,7 +221,40 @@ impl TouchbarRenderer {
         rotated
     }
 
-    /// Process a touch event through the iced widget tree.
+    /// Build the old ButtonDef widget tree, render it to a pixmap, and return the
+    /// rotated XRGB8888 buffer ready for the DRM framebuffer.
+    pub fn render_to_buffer(&mut self, buttons: &[ButtonDef]) -> Vec<u8> {
+        self.renderer.clear();
+
+        let element = build_button_row(buttons, self.font, self.font_size);
+        Self::sync_tree_slot(&mut self.tree, &element);
+        let mut tree = self.tree.take().unwrap();
+
+        let rotated = self.render_element(&element, &mut tree);
+
+        self.tree = Some(tree);
+        rotated
+    }
+
+    /// Render a list of Widget trait objects to a rotated XRGB8888 buffer.
+    pub fn render_widgets(
+        &mut self,
+        widgets: &[Box<dyn Widget>],
+        ctx: &RenderContext,
+    ) -> Vec<u8> {
+        self.renderer.clear();
+
+        let element = build_widget_row(widgets, ctx);
+        Self::sync_tree_slot(&mut self.widget_tree, &element);
+        let mut tree = self.widget_tree.take().unwrap();
+
+        let rotated = self.render_element(&element, &mut tree);
+
+        self.widget_tree = Some(tree);
+        rotated
+    }
+
+    /// Process a touch event through the old ButtonDef widget tree.
     /// Returns messages produced by widget interactions (ButtonDown/ButtonUp).
     pub fn process_touch(
         &mut self,
@@ -237,16 +263,13 @@ impl TouchbarRenderer {
         buttons: &[ButtonDef],
     ) -> Vec<Message> {
         let mut element = build_button_row(buttons, self.font, self.font_size);
-        self.sync_tree(&element);
+        Self::sync_tree_slot(&mut self.tree, &element);
         let mut tree = self.tree.take().unwrap();
 
         let w = self.logical_width;
         let vis_h = self.visible_height;
 
-        let limits = Limits::new(
-            Size::ZERO,
-            Size::new(w as f32, vis_h as f32),
-        );
+        let limits = Limits::new(Size::ZERO, Size::new(w as f32, vis_h as f32));
         let node = element.as_widget().layout(&mut tree, &self.renderer, &limits);
         let layout = Layout::new(&node);
 
@@ -271,6 +294,50 @@ impl TouchbarRenderer {
         );
 
         self.tree = Some(tree);
+        messages
+    }
+
+    /// Process a touch event through the new Widget rendering path.
+    /// Returns WidgetMessage values produced by widget interactions.
+    pub fn process_touch_widgets(
+        &mut self,
+        iced_event: iced_core::Event,
+        cursor: mouse::Cursor,
+        widgets: &[Box<dyn Widget>],
+        ctx: &RenderContext,
+    ) -> Vec<WidgetMessage> {
+        let mut element = build_widget_row(widgets, ctx);
+        Self::sync_tree_slot(&mut self.widget_tree, &element);
+        let mut tree = self.widget_tree.take().unwrap();
+
+        let w = self.logical_width;
+        let vis_h = self.visible_height;
+
+        let limits = Limits::new(Size::ZERO, Size::new(w as f32, vis_h as f32));
+        let node = element.as_widget().layout(&mut tree, &self.renderer, &limits);
+        let layout = Layout::new(&node);
+
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        let viewport = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: w as f32,
+            height: vis_h as f32,
+        };
+
+        element.as_widget_mut().on_event(
+            &mut tree,
+            iced_event,
+            layout,
+            cursor,
+            &self.renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            &viewport,
+        );
+
+        self.widget_tree = Some(tree);
         messages
     }
 }
@@ -525,6 +592,34 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
     container(
         row(children)
             .spacing(spacing)
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(2)
+    .into()
+}
+
+/// Build an iced Element row from Widget trait objects.
+fn build_widget_row<'a>(
+    widgets: &'a [Box<dyn Widget>],
+    ctx: &'a RenderContext,
+) -> Element<'a, WidgetMessage, Theme, IcedRenderer> {
+    let children: Vec<Element<'a, WidgetMessage, Theme, IcedRenderer>> = widgets
+        .iter()
+        .map(|w| {
+            let portion = (w.width_fraction() * 1000.0).round() as u16;
+            container(w.render(ctx))
+                .width(Length::FillPortion(portion))
+                .height(Length::Fill)
+                .into()
+        })
+        .collect();
+
+    container(
+        row(children)
+            .spacing(4)
             .height(Length::Fill)
             .width(Length::Fill),
     )
