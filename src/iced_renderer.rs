@@ -10,8 +10,11 @@ use iced_core::{
     Background, Color, Element, Font, Length, Pixels, Rectangle, Shell, Size, Theme,
 };
 use iced_graphics::Viewport;
-use iced_widget::{container, mouse_area, row, text};
+use iced_widget::{container, mouse_area, row, text, Stack};
 use tiny_skia::Pixmap;
+
+use crate::battery_icon_widget::BatteryIconWidget;
+use crate::memory_graph_widget::MemoryGraphWidget;
 
 type IcedRenderer = iced_tiny_skia::Renderer;
 
@@ -30,6 +33,15 @@ pub enum ButtonAction {
     None,
 }
 
+#[derive(Debug, Clone)]
+pub struct BatteryInfo {
+    pub capacity: u32,
+    pub charging: bool,
+    pub blink_on: bool,
+    pub time_estimate: Option<String>,
+    pub show_time: bool,
+}
+
 pub struct ButtonDef {
     pub label: String,
     pub active: bool,
@@ -38,6 +50,12 @@ pub struct ButtonDef {
     /// Optional custom background color as (r, g, b) in 0.0–1.0.
     pub color: Option<(f64, f64, f64)>,
     pub action: ButtonAction,
+    /// Memory graph data — when Some, renders a bar graph instead of text.
+    pub graph_data: Option<Vec<u32>>,
+    /// Maximum columns for the memory graph.
+    pub graph_max_columns: Option<usize>,
+    /// Battery info — when Some, renders a battery icon with fill level.
+    pub battery: Option<BatteryInfo>,
 }
 
 pub struct TouchbarRenderer {
@@ -269,27 +287,108 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
             };
             let portion = (btn.width_fraction * 1000.0).round() as u16;
 
-            let inner = container(
-                text(btn.label.to_string())
-                    .font(font)
-                    .size(font_size)
-                    .color(Color::WHITE)
-                    .align_x(alignment::Horizontal::Center)
-                    .align_y(alignment::Vertical::Center)
+            let inner: Element<'_, Message, Theme, IcedRenderer> =
+                if let Some(ref info) = btn.battery {
+                    if info.show_time {
+                        let time_text = info
+                            .time_estimate
+                            .as_deref()
+                            .unwrap_or("N/A");
+                        let text_color = if info.charging {
+                            Color::from_rgb(0.3, 0.9, 0.3)
+                        } else {
+                            Color::WHITE
+                        };
+                        container(
+                            text(time_text.to_string())
+                                .font(font)
+                                .size(font_size * 0.75)
+                                .color(text_color)
+                                .align_x(alignment::Horizontal::Center)
+                                .align_y(alignment::Vertical::Center)
+                                .width(Length::Fill)
+                                .height(Length::Fill),
+                        )
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(padding)
+                        .style(move |_theme: &Theme| container::Style {
+                            background: Some(Background::Color(bg)),
+                            border: iced_core::Border {
+                                radius: 8.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                    } else {
+                        let icon = BatteryIconWidget::new(info.capacity, info.charging, info.blink_on);
+                        let label = text(btn.label.to_string())
+                            .font(font)
+                            .size(font_size * 0.75)
+                            .color(Color::WHITE)
+                            .align_x(alignment::Horizontal::Center)
+                            .align_y(alignment::Vertical::Center)
+                            .width(Length::Fill)
+                            .height(Length::Fill);
+                        let stacked: Element<'_, Message, Theme, IcedRenderer> = Stack::new()
+                            .push(icon)
+                            .push(label)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .into();
+                        container(stacked)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .padding(padding)
+                            .style(move |_theme: &Theme| container::Style {
+                                background: Some(Background::Color(bg)),
+                                border: iced_core::Border {
+                                    radius: 8.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            })
+                            .into()
+                    }
+                } else if let (Some(data), Some(max_cols)) = (&btn.graph_data, btn.graph_max_columns) {
+                    container(MemoryGraphWidget::new(data.clone(), max_cols))
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(padding)
+                        .style(move |_theme: &Theme| container::Style {
+                            background: Some(Background::Color(bg)),
+                            border: iced_core::Border {
+                                radius: 8.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    container(
+                        text(btn.label.to_string())
+                            .font(font)
+                            .size(font_size)
+                            .color(Color::WHITE)
+                            .align_x(alignment::Horizontal::Center)
+                            .align_y(alignment::Vertical::Center)
+                            .width(Length::Fill)
+                            .height(Length::Fill),
+                    )
                     .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(padding)
-            .style(move |_theme: &Theme| container::Style {
-                background: Some(Background::Color(bg)),
-                border: iced_core::Border {
-                    radius: 8.0.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
+                    .height(Length::Fill)
+                    .padding(padding)
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(Background::Color(bg)),
+                        border: iced_core::Border {
+                            radius: 8.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+                };
 
             let wrapped: Element<'_, Message, Theme, IcedRenderer> = match &btn.action {
                 ButtonAction::LayerButton(idx) => {

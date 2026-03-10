@@ -155,6 +155,8 @@ pub struct ButtonConfig {
     pub window_title: Option<bool>,
     pub memory: Option<bool>,
     pub load_avg: Option<bool>,
+    pub sample_interval: Option<u32>,
+    pub graph_window: Option<u32>,
 }
 
 fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
@@ -196,6 +198,8 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     window_title: None,
                     memory: None,
                     load_avg: None,
+                    sample_interval: None,
+                    graph_window: None,
                 },
             );
         }

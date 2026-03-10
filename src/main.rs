@@ -34,9 +34,12 @@ use std::{
 use udev::MonitorBuilder;
 
 mod backlight;
+mod battery_icon_widget;
 mod config;
 mod display;
 mod iced_renderer;
+mod memory_graph;
+mod memory_graph_widget;
 mod pixel_shift;
 mod workspace;
 
@@ -44,7 +47,8 @@ use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, WorkspacesConfig};
 use display::DrmBackend;
-use iced_renderer::{ButtonAction, ButtonDef, Message as IcedMessage, TouchbarRenderer};
+use iced_renderer::{BatteryInfo, ButtonAction, ButtonDef, Message as IcedMessage, TouchbarRenderer};
+use memory_graph::MemoryHistory;
 use pixel_shift::PixelShiftManager;
 use workspace::WorkspaceManager;
 
@@ -101,29 +105,22 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
         .unwrap_or_else(|_| "Unknown".to_string());
 
     let capacity = {
-        #[cfg(target_arch = "x86_64")]
-        {
-            let charge_now_path = format!("/sys/class/power_supply/{}/charge_now", battery);
-            let charge_full_path = format!("/sys/class/power_supply/{}/charge_full", battery);
-            let charge_now = fs::read_to_string(&charge_now_path)
-                .ok()
-                .and_then(|s| s.trim().parse::<f64>().ok());
-            let charge_full = fs::read_to_string(&charge_full_path)
-                .ok()
-                .and_then(|s| s.trim().parse::<f64>().ok());
-            match (charge_now, charge_full) {
-                (Some(now), Some(full)) if full > 0.0 => ((now / full) * 100.0).round() as u32,
-                _ => 100,
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let capacity_path = format!("/sys/class/power_supply/{}/capacity", battery);
-            fs::read_to_string(&capacity_path)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(100)
-        }
+        let base = format!("/sys/class/power_supply/{}", battery);
+        let from_ratio = |num_file: &str, den_file: &str| -> Option<u32> {
+            let num = fs::read_to_string(format!("{}/{}", base, num_file))
+                .ok()?.trim().parse::<f64>().ok()?;
+            let den = fs::read_to_string(format!("{}/{}", base, den_file))
+                .ok()?.trim().parse::<f64>().ok().filter(|v| *v > 0.0)?;
+            Some(((num / den) * 100.0).round() as u32)
+        };
+        from_ratio("charge_now", "charge_full")
+            .or_else(|| from_ratio("energy_now", "energy_full"))
+            .unwrap_or_else(|| {
+                fs::read_to_string(format!("{}/capacity", base))
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .unwrap_or(100)
+            })
     };
 
     let status = match status.trim() {
@@ -134,29 +131,69 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
     (capacity, status)
 }
 
+/// Returns estimated time remaining as a formatted string (e.g. "7:51" or "1:23 to full").
+/// Returns None if estimation is not possible.
+fn get_battery_time_estimate(battery: &str, charging: bool) -> Option<String> {
+    let base = format!("/sys/class/power_supply/{}", battery);
+    let read_val = |file: &str| -> Option<f64> {
+        fs::read_to_string(format!("{}/{}", base, file))
+            .ok()?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|v| *v != 0.0)
+    };
+
+    // 1. Try direct time_to_* files (value in seconds)
+    let time_secs = if charging {
+        read_val("time_to_full_now")
+    } else {
+        read_val("time_to_empty_now")
+    };
+    if let Some(secs) = time_secs {
+        let h = (secs / 3600.0) as u32;
+        let m = ((secs % 3600.0) / 60.0) as u32;
+        return Some(format!("{}h{:02}m", h, m));
+    }
+
+    // 2. Try energy_now / power_now
+    let energy_now = read_val("energy_now");
+    let energy_full = read_val("energy_full");
+    let power_now = read_val("power_now").map(|v| v.abs());
+
+    // 3. Derive energy from charge × voltage if needed
+    let (energy_now, energy_full) = match (energy_now, energy_full) {
+        (Some(en), Some(ef)) => (Some(en), Some(ef)),
+        _ => {
+            let voltage = read_val("voltage_now")?;
+            let cn = read_val("charge_now")?;
+            let cf = read_val("charge_full")?;
+            (
+                Some(cn * voltage / 1_000_000.0),
+                Some(cf * voltage / 1_000_000.0),
+            )
+        }
+    };
+
+    // 4. Derive power from current × voltage if needed
+    let power = power_now.or_else(|| {
+        let voltage = read_val("voltage_now")?;
+        let current = read_val("current_now").map(|v| v.abs())?;
+        Some(voltage * current / 1_000_000.0)
+    });
+
+    let (en, ef, pw) = (energy_now?, energy_full?, power.filter(|v| *v > 0.0)?);
+    let hours = if charging { (ef - en) / pw } else { en / pw };
+    let h = hours as u32;
+    let m = ((hours - h as f64) * 60.0) as u32;
+    Some(format!("{}h{:02}m", h, m))
+}
+
 fn get_load_avg() -> String {
     let loadavg = fs::read_to_string("/proc/loadavg").unwrap_or_default();
     loadavg.split_whitespace().next().unwrap_or("0.00").to_string()
 }
 
-fn get_memory_usage() -> u32 {
-    let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
-    let mut total = 0u64;
-    let mut available = 0u64;
-    for line in meminfo.lines() {
-        if let Some(val) = line.strip_prefix("MemTotal:") {
-            total = val.trim().strip_suffix(" kB").unwrap_or(val.trim())
-                .trim().parse().unwrap_or(0);
-        } else if let Some(val) = line.strip_prefix("MemAvailable:") {
-            available = val.trim().strip_suffix(" kB").unwrap_or(val.trim())
-                .trim().parse().unwrap_or(0);
-        }
-    }
-    if total == 0 {
-        return 0;
-    }
-    ((total - available) * 100 / total) as u32
-}
 
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
@@ -308,6 +345,8 @@ pub struct FunctionLayer {
     /// Each entry is (width_fraction, Button) where width_fraction is 0.0–1.0
     buttons: Vec<(f64, Button)>,
     faster_refresh: bool,
+    memory_sample_interval_ms: u32,
+    memory_graph_window_s: u32,
 }
 
 impl FunctionLayer {
@@ -320,6 +359,11 @@ impl FunctionLayer {
         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
         let displays_memory = cfg.iter().any(|cfg| cfg.memory == Some(true));
         let displays_load_avg = cfg.iter().any(|cfg| cfg.load_avg == Some(true));
+
+        // Extract graph config from first Memory button
+        let mem_btn = cfg.iter().find(|c| c.memory == Some(true));
+        let memory_sample_interval_ms = mem_btn.and_then(|c| c.sample_interval).unwrap_or(1000);
+        let memory_graph_window_s = mem_btn.and_then(|c| c.graph_window).unwrap_or(60);
 
         // Compute width fractions. Buttons with an explicit Width (percentage)
         // get that share; the rest split whatever remains equally.
@@ -347,6 +391,8 @@ impl FunctionLayer {
             displays_load_avg,
             buttons,
             faster_refresh,
+            memory_sample_interval_ms,
+            memory_graph_window_s,
         }
     }
 }
@@ -408,6 +454,9 @@ where
 fn build_button_defs(
     layer: &FunctionLayer,
     ws: Option<(&WorkspaceManager, &WorkspacesConfig)>,
+    memory_history: Option<&MemoryHistory>,
+    blink_on: bool,
+    show_battery_time: bool,
 ) -> Vec<ButtonDef> {
     let mut defs = Vec::new();
     for (idx, (width_frac, b)) in layer.buttons.iter().enumerate() {
@@ -435,6 +484,9 @@ fn build_button_defs(
                         width_fraction: per_ws,
                         color,
                         action: ButtonAction::Workspace(w.id),
+                        graph_data: None,
+                        graph_max_columns: None,
+                        battery: None,
                     });
                 }
             }
@@ -448,6 +500,9 @@ fn build_button_defs(
                     width_fraction: *width_frac,
                     color: b.color,
                     action: ButtonAction::None,
+                    graph_data: None,
+                    graph_max_columns: None,
+                    battery: None,
                 });
             }
             ButtonImage::Spacer => {
@@ -457,6 +512,59 @@ fn build_button_defs(
                     width_fraction: *width_frac,
                     color: b.color,
                     action: ButtonAction::None,
+                    graph_data: None,
+                    graph_max_columns: None,
+                    battery: None,
+                });
+            }
+            ButtonImage::Memory => {
+                if let Some(history) = memory_history {
+                    defs.push(ButtonDef {
+                        label: String::new(),
+                        active: b.active,
+                        width_fraction: *width_frac,
+                        color: b.color,
+                        action: ButtonAction::None,
+                        graph_data: Some(history.samples().iter().copied().collect()),
+                        graph_max_columns: Some(history.max_samples()),
+                        battery: None,
+                    });
+                } else {
+                    defs.push(ButtonDef {
+                        label: format!("{}%", memory_graph::get_memory_usage()),
+                        active: b.active,
+                        width_fraction: *width_frac,
+                        color: b.color,
+                        action: ButtonAction::None,
+                        graph_data: None,
+                        graph_max_columns: None,
+                        battery: None,
+                    });
+                }
+            }
+            ButtonImage::Battery(battery) => {
+                let (capacity, state) = get_battery_state(battery);
+                let charging = state == BatteryState::Charging;
+                let show = if capacity < 10 && !charging { blink_on } else { true };
+                defs.push(ButtonDef {
+                    label: format!("{capacity}%"),
+                    active: b.active,
+                    width_fraction: *width_frac,
+                    color: b.color,
+                    action: ButtonAction::LayerButton(idx),
+                    graph_data: None,
+                    graph_max_columns: None,
+                    battery: Some(BatteryInfo {
+                        capacity,
+                        charging,
+                        blink_on: show,
+                        time_estimate: if show_battery_time {
+                            get_battery_time_estimate(battery, charging)
+                        } else {
+                            None
+                        },
+                        show_time: show_battery_time,
+                    }),
                 });
             }
             _ => {
@@ -468,14 +576,6 @@ fn build_button_defs(
                                 .format_localized_with_items(format.iter(), *locale)
                                 .to_string()
                         }
-                        ButtonImage::Battery(battery) => {
-                            let (capacity, _) = get_battery_state(battery);
-                            format!("{capacity}%")
-                        }
-                        ButtonImage::Memory => {
-                            let usage = get_memory_usage();
-                            format!("{usage}%")
-                        }
                         ButtonImage::LoadAvg => get_load_avg(),
                         ButtonImage::Icon(_) => "?".to_string(),
                         _ => unreachable!(),
@@ -484,6 +584,9 @@ fn build_button_defs(
                     width_fraction: *width_frac,
                     color: b.color,
                     action: ButtonAction::LayerButton(idx),
+                    graph_data: None,
+                    graph_max_columns: None,
+                    battery: None,
                 });
             }
         }
@@ -551,6 +654,18 @@ fn real_main(drm: &mut DrmBackend) {
     );
     let mut active_layer = 0;
     let mut needs_complete_redraw = true;
+    let mut blink_on = true;
+    let mut last_blink_toggle = std::time::Instant::now();
+    let mut battery_show_time_until: Option<std::time::Instant> = None;
+
+    let mut memory_history = if layers.iter().any(|l| l.displays_memory) {
+        Some(MemoryHistory::new(
+            layers[0].memory_sample_interval_ms,
+            layers[0].memory_graph_window_s,
+        ))
+    } else {
+        None
+    };
 
     let mut input_tb = Libinput::new_with_udev(Interface);
     let mut input_main = Libinput::new_with_udev(Interface);
@@ -623,6 +738,14 @@ fn real_main(drm: &mut DrmBackend) {
                 &cfg.font_family, cfg.font_size,
                 cfg.font_bold, cfg.font_italic,
             );
+            memory_history = if layers.iter().any(|l| l.displays_memory) {
+                Some(MemoryHistory::new(
+                    layers[0].memory_sample_interval_ms,
+                    layers[0].memory_graph_window_s,
+                ))
+            } else {
+                None
+            };
         }
 
         let now = Local::now();
@@ -647,18 +770,35 @@ fn real_main(drm: &mut DrmBackend) {
             last_redraw_ts = current_ts;
         }
         if layers[active_layer].displays_battery {
+            let now_instant = std::time::Instant::now();
+            if now_instant.duration_since(last_blink_toggle).as_millis() >= 500 {
+                blink_on = !blink_on;
+                last_blink_toggle = now_instant;
+            }
+            let elapsed = now_instant.duration_since(last_blink_toggle).as_millis() as i32;
+            next_timeout_ms = min(next_timeout_ms, (500 - elapsed).max(50) as i32);
+
             for button in &mut layers[active_layer].buttons {
                 if let ButtonImage::Battery(_) = button.1.image {
                     button.1.changed = true;
                 }
             }
         }
-        if layers[active_layer].displays_memory {
-            for button in &mut layers[active_layer].buttons {
-                if let ButtonImage::Memory = button.1.image {
-                    button.1.changed = true;
-                }
+        if let Some(deadline) = battery_show_time_until {
+            let now_instant = std::time::Instant::now();
+            if now_instant >= deadline {
+                battery_show_time_until = None;
+                needs_complete_redraw = true;
+            } else {
+                let remaining = deadline.duration_since(now_instant).as_millis() as i32;
+                next_timeout_ms = min(next_timeout_ms, remaining.max(50));
             }
+        }
+        if let Some(ref mut history) = memory_history {
+            if history.maybe_sample() {
+                needs_complete_redraw = true;
+            }
+            next_timeout_ms = min(next_timeout_ms, history.sample_interval_ms() as i32);
         }
         if layers[active_layer].displays_load_avg {
             for button in &mut layers[active_layer].buttons {
@@ -670,7 +810,7 @@ fn real_main(drm: &mut DrmBackend) {
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
-            let btn_defs = build_button_defs(&layers[active_layer], ws);
+            let btn_defs = build_button_defs(&layers[active_layer], ws, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
             let buffer = iced_rndr.render_to_buffer(&btn_defs);
             drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
@@ -768,7 +908,7 @@ fn real_main(drm: &mut DrmBackend) {
                     };
 
                     let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
-                    let btn_defs = build_button_defs(&layers[active_layer], ws);
+                    let btn_defs = build_button_defs(&layers[active_layer], ws, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
                     let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
 
                     for msg in messages {
@@ -785,6 +925,12 @@ fn real_main(drm: &mut DrmBackend) {
                                     layers[active_layer].buttons[i]
                                         .1
                                         .set_active(&mut uinput, false);
+                                    if let ButtonImage::Battery(_) = layers[active_layer].buttons[i].1.image {
+                                        battery_show_time_until = Some(
+                                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                        );
+                                        needs_complete_redraw = true;
+                                    }
                                 }
                             }
                             IcedMessage::WorkspaceDown(_) => {
