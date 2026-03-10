@@ -20,12 +20,15 @@ pub struct VolumeState {
 struct SharedState {
     volume: VolumeState,
     changed: bool,
+    connected: bool,
+    reconnect_flash: bool,
 }
 
 pub struct VolumeManager {
     state: Arc<Mutex<SharedState>>,
     event_fd: OwnedFd,
-    _thread: JoinHandle<()>,
+    thread: Mutex<Option<JoinHandle<()>>>,
+    pulse_server: Option<String>,
 }
 
 fn create_eventfd() -> OwnedFd {
@@ -53,20 +56,44 @@ fn drain_eventfd(fd: &OwnedFd) {
 }
 
 impl VolumeManager {
-    pub fn try_new(pulse_server: Option<&str>) -> Option<Self> {
+    /// Create a new VolumeManager in disconnected state.
+    /// Always succeeds -- does NOT attempt to connect.
+    /// Call `try_connect()` to establish the PulseAudio connection.
+    pub fn new(pulse_server: Option<&str>) -> Self {
         let event_fd = create_eventfd();
-        let thread_efd = unsafe { OwnedFd::from_raw_fd(libc::dup(event_fd.as_raw_fd())) };
-
         let state = Arc::new(Mutex::new(SharedState {
             volume: VolumeState {
                 volume_percent: 0,
                 muted: false,
             },
             changed: false,
+            connected: false,
+            reconnect_flash: false,
         }));
 
-        let thread_state = Arc::clone(&state);
-        let server = pulse_server.map(|s| s.to_string());
+        Self {
+            state,
+            event_fd,
+            thread: Mutex::new(None),
+            pulse_server: pulse_server.map(|s| s.to_string()),
+        }
+    }
+
+    /// Attempt to connect to PulseAudio.
+    /// Spawns a background thread running the PA mainloop.
+    /// Returns true on successful connection, false on failure.
+    pub fn try_connect(&self) -> bool {
+        // Join old thread if any
+        {
+            let mut thread_guard = self.thread.lock().unwrap();
+            if let Some(old_thread) = thread_guard.take() {
+                let _ = old_thread.join();
+            }
+        }
+
+        let thread_efd = unsafe { OwnedFd::from_raw_fd(libc::dup(self.event_fd.as_raw_fd())) };
+        let thread_state = Arc::clone(&self.state);
+        let server = self.pulse_server.clone();
         let (tx, rx) = mpsc::sync_channel(1);
 
         let thread = thread::spawn(move || {
@@ -75,16 +102,20 @@ impl VolumeManager {
 
         match rx.recv() {
             Ok(true) => {
+                {
+                    let mut s = self.state.lock().unwrap();
+                    s.connected = true;
+                    s.reconnect_flash = true;
+                    s.changed = true;
+                }
+                signal_fd(self.event_fd.as_raw_fd());
+                *self.thread.lock().unwrap() = Some(thread);
                 eprintln!("PulseAudio volume: connected");
-                Some(Self {
-                    state,
-                    event_fd,
-                    _thread: thread,
-                })
+                true
             }
             _ => {
-                eprintln!("Failed to connect to PulseAudio");
-                None
+                eprintln!("PulseAudio volume: failed to connect");
+                false
             }
         }
     }
@@ -103,6 +134,22 @@ impl VolumeManager {
 
     pub fn event_fd(&self) -> BorrowedFd<'_> {
         self.event_fd.as_fd()
+    }
+
+    /// Whether the manager is currently connected to PulseAudio.
+    pub fn is_connected(&self) -> bool {
+        self.state.lock().unwrap().connected
+    }
+
+    /// Check and clear the reconnect flash flag.
+    /// Returns true once after a successful reconnection.
+    pub fn has_reconnect_flash(&self) -> bool {
+        let mut s = self.state.lock().unwrap();
+        let flash = s.reconnect_flash;
+        if flash {
+            s.reconnect_flash = false;
+        }
+        flash
     }
 }
 
@@ -176,12 +223,22 @@ fn run_pa_loop(
 
     let _ = ready_tx.send(true);
 
-    // Event loop — iterate blocks until an event is dispatched
+    // Event loop -- iterate blocks until an event is dispatched
     loop {
         mainloop.iterate(true);
         match context.borrow().get_state() {
             ContextState::Failed | ContextState::Terminated => {
-                eprintln!("PulseAudio context disconnected");
+                eprintln!("PulseAudio volume: disconnected");
+                // Clear state on disconnect
+                let mut s = state.lock().unwrap();
+                s.connected = false;
+                s.volume = VolumeState {
+                    volume_percent: 0,
+                    muted: false,
+                };
+                s.changed = true;
+                drop(s);
+                signal_fd(efd_raw);
                 break;
             }
             _ => {}
