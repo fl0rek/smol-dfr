@@ -41,6 +41,7 @@ mod iced_renderer;
 mod memory_graph;
 mod memory_graph_widget;
 mod pixel_shift;
+mod reconnect;
 mod session_detect;
 mod volume;
 mod workspace;
