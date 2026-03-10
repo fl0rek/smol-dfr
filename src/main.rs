@@ -776,6 +776,7 @@ fn real_main(drm: &mut DrmBackend) {
     PrivDrop::default()
         .user(drop_username)
         .group_list(&["input", "video"])
+        .include_default_supplementary_groups()
         .apply()
         .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
 

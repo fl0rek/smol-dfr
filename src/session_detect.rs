@@ -22,31 +22,26 @@ pub fn parse_session_list(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse `loginctl show-session <id> -p Type -p Name -p User --value` output.
-/// Returns (session_type, username, uid) if the output has at least 3 lines.
+/// Parse `loginctl show-session <id> -p Type -p Name -p User` output.
+/// Expects `Key=Value` lines (without `--value` flag). Order-independent.
+/// Returns (session_type, username, uid) if all three properties are found.
 pub fn parse_session_properties(output: &str) -> Option<(String, String, u32)> {
-    let lines: Vec<&str> = output.lines().collect();
-    if lines.len() < 3 {
-        return None;
-    }
-    let session_type = lines[0].trim().to_string();
-    let username = lines[1].trim().to_string();
-    let uid: u32 = lines[2].trim().parse().ok()?;
-    Some((session_type, username, uid))
-}
+    let mut session_type = None;
+    let mut username = None;
+    let mut uid = None;
 
-/// Parse null-byte-separated environ data (like /proc/<pid>/environ)
-/// and extract the value of the given variable name.
-pub fn parse_environ_for_var(environ_bytes: &[u8], var_name: &str) -> Option<String> {
-    let prefix = format!("{}=", var_name);
-    for entry in environ_bytes.split(|&b| b == 0) {
-        if let Ok(s) = std::str::from_utf8(entry) {
-            if let Some(val) = s.strip_prefix(&prefix) {
-                return Some(val.to_string());
-            }
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("Type=") {
+            session_type = Some(val.to_string());
+        } else if let Some(val) = line.strip_prefix("Name=") {
+            username = Some(val.to_string());
+        } else if let Some(val) = line.strip_prefix("User=") {
+            uid = val.parse::<u32>().ok();
         }
     }
-    None
+
+    Some((session_type?, username?, uid?))
 }
 
 /// Detect the graphical session owner via loginctl.
@@ -70,7 +65,6 @@ pub fn detect_graphical_session_user() -> Option<SessionUser> {
                 "Name",
                 "-p",
                 "User",
-                "--value",
             ])
             .output()
             .ok()?;
@@ -84,21 +78,19 @@ pub fn detect_graphical_session_user() -> Option<SessionUser> {
     None
 }
 
-/// Discover NIRI_SOCKET by reading the niri process's environment.
-/// Uses pgrep to find niri's PID, then reads /proc/<pid>/environ.
+/// Discover NIRI_SOCKET by finding the socket file in XDG_RUNTIME_DIR.
+/// Niri creates its socket at `$XDG_RUNTIME_DIR/niri.{display}.{pid}.sock`.
 pub fn discover_niri_socket(uid: u32) -> Option<String> {
-    let output = Command::new("pgrep")
-        .args(["-u", &uid.to_string(), "niri"])
-        .output()
-        .ok()?;
-    let pid_str = String::from_utf8_lossy(&output.stdout);
-    let pid = pid_str.trim().lines().next()?.trim();
-    if pid.is_empty() {
-        return None;
+    let runtime_dir = format!("/run/user/{}", uid);
+    let entries = std::fs::read_dir(&runtime_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("niri.") && name.ends_with(".sock") {
+            return Some(entry.path().to_string_lossy().into_owned());
+        }
     }
-
-    let environ = std::fs::read(format!("/proc/{}/environ", pid)).ok()?;
-    parse_environ_for_var(&environ, "NIRI_SOCKET")
+    None
 }
 
 #[cfg(test)]
@@ -126,7 +118,7 @@ mod tests {
 
     #[test]
     fn test_parse_session_properties_wayland() {
-        let output = "wayland\nuser\n1000\n";
+        let output = "User=1000\nName=user\nType=wayland\n";
         let result = parse_session_properties(output);
         assert_eq!(
             result,
@@ -136,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_parse_session_properties_tty() {
-        let output = "tty\nuser\n1000\n";
+        let output = "Type=tty\nName=user\nUser=1000\n";
         let result = parse_session_properties(output);
         assert_eq!(
             result,
@@ -146,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_parse_session_properties_x11() {
-        let output = "x11\njohn\n1001\n";
+        let output = "Name=john\nType=x11\nUser=1001\n";
         let result = parse_session_properties(output);
         assert_eq!(
             result,
@@ -161,65 +153,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_session_properties_too_few_lines() {
-        let result = parse_session_properties("wayland\nuser\n");
-        // Only 2 non-empty lines when trailing newline is present
-        // "wayland\nuser\n" splits into ["wayland", "user", ""]
-        // lines[2] = "" which won't parse as u32
+    fn test_parse_session_properties_missing_field() {
+        let result = parse_session_properties("Type=wayland\nName=user\n");
         assert_eq!(result, None);
     }
-
-    #[test]
-    fn test_parse_environ_for_var_found() {
-        let environ =
-            b"HOME=/home/user\0NIRI_SOCKET=/run/user/1000/niri/niri.sock\0TERM=xterm\0";
-        let result = parse_environ_for_var(environ, "NIRI_SOCKET");
-        assert_eq!(
-            result,
-            Some("/run/user/1000/niri/niri.sock".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_environ_for_var_not_found() {
-        let environ = b"HOME=/home/user\0TERM=xterm\0";
-        let result = parse_environ_for_var(environ, "NIRI_SOCKET");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_parse_environ_for_var_empty() {
-        let result = parse_environ_for_var(b"", "NIRI_SOCKET");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_parse_environ_for_var_partial_match() {
-        // Ensure "NIRI_SOCKET_EXTRA" doesn't match "NIRI_SOCKET"
-        let environ = b"NIRI_SOCKET_EXTRA=/wrong\0NIRI_SOCKET=/correct\0";
-        let result = parse_environ_for_var(environ, "NIRI_SOCKET");
-        assert_eq!(result, Some("/correct".to_string()));
-    }
-
-    #[test]
-    fn test_parse_environ_for_var_home() {
-        let environ =
-            b"HOME=/home/user\0NIRI_SOCKET=/run/user/1000/niri/niri.sock\0TERM=xterm\0";
-        let result = parse_environ_for_var(environ, "HOME");
-        assert_eq!(result, Some("/home/user".to_string()));
-    }
-
-    // Integration-level tests for detect_graphical_session_user and discover_niri_socket
-    // cannot run in CI (require root/loginctl/running niri) but the parsing functions
-    // above cover the core logic.
-
-    // Verify that detect_graphical_session_user filters for graphical sessions:
-    // This is tested implicitly by parse_session_properties returning the type,
-    // and detect_graphical_session_user checking for "wayland" or "x11".
 
     #[test]
     fn test_parse_session_properties_with_extra_whitespace() {
-        let output = "  wayland  \n  user  \n  1000  \n";
+        let output = "  Type=wayland  \n  Name=user  \n  User=1000  \n";
         let result = parse_session_properties(output);
         assert_eq!(
             result,
