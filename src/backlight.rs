@@ -65,6 +65,7 @@ pub struct BacklightManager {
     bl_file: Option<File>,
     bl_path: Option<PathBuf>,
     display_bl_path: Option<PathBuf>,
+    lid_just_opened: bool,
 }
 
 impl BacklightManager {
@@ -104,6 +105,7 @@ impl BacklightManager {
             current_bl,
             last_active: Instant::now(),
             display_bl_path,
+            lid_just_opened: false,
         }
     }
     fn display_to_touchbar(display: u32, active_brightness: u32) -> u32 {
@@ -151,11 +153,18 @@ impl BacklightManager {
                     println!("Lid Switch event: {:?}", self.lid_state);
                     if toggle.switch_state() == SwitchState::Off {
                         self.last_active = Instant::now();
+                        self.lid_just_opened = true;
                     }
                 }
             }
             _ => {}
         }
+    }
+    /// Returns true if lid was opened since last call, clears the flag.
+    pub fn take_lid_opened(&mut self) -> bool {
+        let val = self.lid_just_opened;
+        self.lid_just_opened = false;
+        val
     }
     pub fn update_backlight(&mut self, cfg: &Config) {
         if self.bl_file.is_none() {

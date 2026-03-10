@@ -59,6 +59,56 @@ use volume::VolumeManager;
 use workspace::WorkspaceManager;
 
 const TIMEOUT_MS: i32 = 10 * 1000;
+const SYSFS_RETRY_INTERVAL_SECS: u64 = 60;
+
+struct SysfsFailureState {
+    battery_failed: bool,
+    thermal_failed: bool,
+    load_avg_failed: bool,
+}
+
+impl SysfsFailureState {
+    fn new() -> Self {
+        Self {
+            battery_failed: false,
+            thermal_failed: false,
+            load_avg_failed: false,
+        }
+    }
+
+    /// Log first failure, suppress repeats, log recovery.
+    fn report_battery(&mut self, ok: bool) {
+        if ok && self.battery_failed {
+            eprintln!("Battery sysfs recovered");
+            self.battery_failed = false;
+        } else if !ok && !self.battery_failed {
+            eprintln!("Warning: battery sysfs read failed, showing '--'");
+            self.battery_failed = true;
+        }
+    }
+
+    fn report_thermal(&mut self, reading: &str) {
+        let ok = reading != "--";
+        if ok && self.thermal_failed {
+            eprintln!("Thermal sysfs recovered");
+            self.thermal_failed = false;
+        } else if !ok && !self.thermal_failed {
+            eprintln!("Warning: thermal sysfs read failed, showing '--'");
+            self.thermal_failed = true;
+        }
+    }
+
+    fn report_load_avg(&mut self, reading: &str) {
+        let ok = reading != "--";
+        if ok && self.load_avg_failed {
+            eprintln!("Load average recovered");
+            self.load_avg_failed = false;
+        } else if !ok && !self.load_avg_failed {
+            eprintln!("Warning: /proc/loadavg read failed, showing '--'");
+            self.load_avg_failed = true;
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BatteryState {
@@ -107,7 +157,7 @@ fn find_battery_device() -> Option<String> {
     None
 }
 
-fn get_battery_state(battery: &str) -> (u32, BatteryState) {
+fn get_battery_state(battery: &str) -> Option<(u32, BatteryState)> {
     let status_path = format!("/sys/class/power_supply/{}/status", battery);
     let status = fs::read_to_string(&status_path)
         .unwrap_or_else(|_| "Unknown".to_string());
@@ -123,20 +173,19 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
         };
         from_ratio("charge_now", "charge_full")
             .or_else(|| from_ratio("energy_now", "energy_full"))
-            .unwrap_or_else(|| {
+            .or_else(|| {
                 fs::read_to_string(format!("{}/capacity", base))
                     .ok()
                     .and_then(|s| s.trim().parse::<u32>().ok())
-                    .unwrap_or(100)
-            })
+            })?
     };
 
-    let status = match status.trim() {
+    let state = match status.trim() {
         "Charging" | "Full" => BatteryState::Charging,
         "Discharging" if capacity < 10 => BatteryState::Low,
         _ => BatteryState::NotCharging,
     };
-    (capacity, status)
+    Some((capacity, state))
 }
 
 /// Returns estimated time remaining as a formatted string (e.g. "7:51" or "1:23 to full").
@@ -198,8 +247,10 @@ fn get_battery_time_estimate(battery: &str, charging: bool) -> Option<String> {
 }
 
 fn get_load_avg() -> String {
-    let loadavg = fs::read_to_string("/proc/loadavg").unwrap_or_default();
-    loadavg.split_whitespace().next().unwrap_or("0.00").to_string()
+    fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
+        .unwrap_or_else(|| "--".to_string())
 }
 
 fn find_thermal_zone() -> Option<String> {
@@ -234,11 +285,11 @@ fn find_thermal_zone() -> Option<String> {
 fn get_temperature(zone: &str) -> String {
     let path = format!("/sys/class/thermal/{}/temp", zone);
     match fs::read_to_string(&path) {
-        Ok(s) => {
-            let millideg: f64 = s.trim().parse().unwrap_or(0.0);
-            format!("{:.0}°C", millideg / 1000.0)
-        }
-        Err(_) => "N/A".to_string(),
+        Ok(s) => match s.trim().parse::<f64>() {
+            Ok(millideg) => format!("{:.0}°C", millideg / 1000.0),
+            Err(_) => "--".to_string(),
+        },
+        Err(_) => "--".to_string(),
     }
 }
 
@@ -544,6 +595,7 @@ fn build_button_defs(
     memory_history: Option<&MemoryHistory>,
     blink_on: bool,
     show_battery_time: bool,
+    sysfs_state: &mut SysfsFailureState,
 ) -> Vec<ButtonDef> {
     let mut defs = Vec::new();
     for (idx, (width_frac, b)) in layer.buttons.iter().enumerate() {
@@ -635,28 +687,47 @@ fn build_button_defs(
                 }
             }
             ButtonImage::Battery(battery) => {
-                let (capacity, state) = get_battery_state(battery);
-                let charging = state == BatteryState::Charging;
-                let show = if capacity < 10 && !charging { blink_on } else { true };
+                let battery_data = get_battery_state(battery);
+                sysfs_state.report_battery(battery_data.is_some());
+                let (label, battery_info) = match battery_data {
+                    Some((capacity, state)) => {
+                        let charging = state == BatteryState::Charging;
+                        let show = if capacity < 10 && !charging { blink_on } else { true };
+                        (
+                            format!("{capacity}%"),
+                            BatteryInfo {
+                                capacity,
+                                charging,
+                                blink_on: show,
+                                time_estimate: if show_battery_time {
+                                    get_battery_time_estimate(battery, charging)
+                                } else {
+                                    None
+                                },
+                                show_time: show_battery_time,
+                            },
+                        )
+                    }
+                    None => (
+                        "--".to_string(),
+                        BatteryInfo {
+                            capacity: 0,
+                            charging: false,
+                            blink_on: true,
+                            time_estimate: None,
+                            show_time: false,
+                        },
+                    ),
+                };
                 defs.push(ButtonDef {
-                    label: format!("{capacity}%"),
+                    label,
                     active: b.active,
                     width_fraction: *width_frac,
                     color: b.color,
                     action: ButtonAction::LayerButton(idx),
                     graph_data: None,
                     graph_max_columns: None,
-                    battery: Some(BatteryInfo {
-                        capacity,
-                        charging,
-                        blink_on: show,
-                        time_estimate: if show_battery_time {
-                            get_battery_time_estimate(battery, charging)
-                        } else {
-                            None
-                        },
-                        show_time: show_battery_time,
-                    }),
+                    battery: Some(battery_info),
                     icon: None,
                 });
             }
@@ -708,8 +779,16 @@ fn build_button_defs(
                                 .format_localized_with_items(format.iter(), *locale)
                                 .to_string()
                         }
-                        ButtonImage::LoadAvg => get_load_avg(),
-                        ButtonImage::Temperature(zone) => get_temperature(zone),
+                        ButtonImage::LoadAvg => {
+                            let val = get_load_avg();
+                            sysfs_state.report_load_avg(&val);
+                            val
+                        }
+                        ButtonImage::Temperature(zone) => {
+                            let val = get_temperature(zone);
+                            sysfs_state.report_thermal(&val);
+                            val
+                        }
                         _ => unreachable!(),
                     },
                     active: b.active,
@@ -828,6 +907,9 @@ fn real_main(drm: &mut DrmBackend) {
     let mut blink_on = true;
     let mut last_blink_toggle = std::time::Instant::now();
     let mut battery_show_time_until: Option<std::time::Instant> = None;
+
+    let mut sysfs_state = SysfsFailureState::new();
+    let mut last_sysfs_retry = Instant::now();
 
     let mut memory_history = if layers.iter().any(|l| l.displays_memory) {
         Some(MemoryHistory::new(
@@ -1019,7 +1101,7 @@ fn real_main(drm: &mut DrmBackend) {
                 .zip(cfg.workspaces.as_ref());
             let vol = volume_mgr.as_ref()
                 .filter(|mgr| mgr.is_connected());
-            let btn_defs = build_button_defs(&layers[active_layer], ws, vol, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
+            let btn_defs = build_button_defs(&layers[active_layer], ws, vol, memory_history.as_ref(), blink_on, battery_show_time_until.is_some(), &mut sysfs_state);
             let buffer = iced_rndr.render_to_buffer(&btn_defs);
             drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
@@ -1110,10 +1192,48 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
 
-        input_tb.dispatch().unwrap();
-        input_main.dispatch().unwrap();
+        // Periodic sysfs device retry (~60s) for disappeared devices
+        if last_sysfs_retry.elapsed().as_secs() >= SYSFS_RETRY_INTERVAL_SECS {
+            last_sysfs_retry = Instant::now();
+            if sysfs_state.battery_failed {
+                if let Some(new_battery) = find_battery_device() {
+                    eprintln!("Sysfs retry: re-discovered battery device '{new_battery}'");
+                    for layer in layers.iter_mut() {
+                        for (_, btn) in &mut layer.buttons {
+                            if let ButtonImage::Battery(ref mut name) = btn.image {
+                                *name = new_battery.clone();
+                            }
+                        }
+                    }
+                    needs_complete_redraw = true;
+                }
+            }
+            if sysfs_state.thermal_failed {
+                if let Some(new_zone) = find_thermal_zone() {
+                    eprintln!("Sysfs retry: re-discovered thermal zone '{new_zone}'");
+                    for layer in layers.iter_mut() {
+                        for (_, btn) in &mut layer.buttons {
+                            if let ButtonImage::Temperature(ref mut zone) = btn.image {
+                                *zone = new_zone.clone();
+                            }
+                        }
+                    }
+                    needs_complete_redraw = true;
+                }
+            }
+        }
+
+        if let Err(e) = input_tb.dispatch() {
+            eprintln!("Warning: touchbar input dispatch error: {e}");
+        }
+        if let Err(e) = input_main.dispatch() {
+            eprintln!("Warning: main input dispatch error: {e}");
+        }
         for event in &mut input_tb.clone().chain(input_main.clone()) {
             backlight.process_event(&event);
+            if backlight.take_lid_opened() {
+                needs_complete_redraw = true;
+            }
             match event {
                 Event::Device(DeviceEvent::Added(evt)) => {
                     let dev = evt.device();
@@ -1186,7 +1306,7 @@ fn real_main(drm: &mut DrmBackend) {
                         .zip(cfg.workspaces.as_ref());
                     let vol = volume_mgr.as_ref()
                         .filter(|mgr| mgr.is_connected());
-                    let btn_defs = build_button_defs(&layers[active_layer], ws, vol, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
+                    let btn_defs = build_button_defs(&layers[active_layer], ws, vol, memory_history.as_ref(), blink_on, battery_show_time_until.is_some(), &mut sysfs_state);
                     let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
 
                     for msg in messages {
