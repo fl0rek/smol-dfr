@@ -45,6 +45,7 @@ mod pixel_shift;
 mod reconnect;
 mod session_detect;
 mod volume;
+mod widgets;
 mod workspace;
 
 use crate::config::ConfigManager;
