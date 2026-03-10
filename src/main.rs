@@ -759,7 +759,8 @@ fn real_main(drm: &mut DrmBackend) {
     let mut uinput = UInputHandle::new(OpenOptions::new().write(true).open("/dev/uinput").unwrap());
     let mut backlight = BacklightManager::new();
     let mut cfg_mgr = ConfigManager::new();
-    let (mut cfg, mut layers) = cfg_mgr.load_config(width);
+    let (mut cfg, mut layers) = cfg_mgr.load_config(width)
+        .expect("Failed to load initial configuration");
     let mut pixel_shift = PixelShiftManager::new();
 
     // Detect graphical session user before dropping privileges

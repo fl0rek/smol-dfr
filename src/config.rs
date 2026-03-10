@@ -177,18 +177,26 @@ pub struct ButtonConfig {
     pub window_title: Option<bool>,
     pub memory: Option<bool>,
     pub load_avg: Option<bool>,
+    pub temperature: Option<bool>,
     pub volume: Option<bool>,
     pub sample_interval: Option<u32>,
     pub graph_window: Option<u32>,
 }
 
-fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
+fn load_config(width: u16) -> Result<(Config, [FunctionLayer; 2]), String> {
+    // System config failure is fatal -- this is an installation problem
     let mut base =
         toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
             .unwrap();
     let user = read_to_string(user_cfg_path())
         .map_err::<Error, _>(|e| e.into())
         .and_then(|r| Ok(toml::from_str::<ConfigProxy>(&r)?));
+    match &user {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Warning: failed to parse user config: {e}, using base config only");
+        }
+    }
     if let Ok(user) = user {
         base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
@@ -203,8 +211,10 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         base.workspaces = user.workspaces.or(base.workspaces);
         base.volume = user.volume.or(base.volume);
     };
-    let mut media_layer_keys = base.media_layer_keys.unwrap();
-    let mut primary_layer_keys = base.primary_layer_keys.unwrap();
+    let mut media_layer_keys = base.media_layer_keys
+        .ok_or("missing MediaLayerKeys in config")?;
+    let mut primary_layer_keys = base.primary_layer_keys
+        .ok_or("missing PrimaryLayerKeys in config")?;
     if width >= 2170 {
         for layer in [&mut media_layer_keys, &mut primary_layer_keys] {
             layer.insert(
@@ -223,6 +233,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     window_title: None,
                     memory: None,
                     load_avg: None,
+                    temperature: None,
                     volume: None,
                     sample_interval: None,
                     graph_window: None,
@@ -232,7 +243,9 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
     }
     let media_layer = FunctionLayer::with_config(media_layer_keys);
     let fkey_layer = FunctionLayer::with_config(primary_layer_keys);
-    let layers = if base.media_layer_default.unwrap() {
+    let media_layer_default = base.media_layer_default
+        .ok_or("missing MediaLayerDefault in config")?;
+    let layers = if media_layer_default {
         [media_layer, fkey_layer]
     } else {
         [fkey_layer, media_layer]
@@ -244,10 +257,14 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
     let font_bold = if base.font_style.is_none() { true } else { font_bold };
 
     let cfg = Config {
-        show_button_outlines: base.show_button_outlines.unwrap(),
-        enable_pixel_shift: base.enable_pixel_shift.unwrap(),
-        adaptive_brightness: base.adaptive_brightness.unwrap(),
-        active_brightness: base.active_brightness.unwrap(),
+        show_button_outlines: base.show_button_outlines
+            .ok_or("missing ShowButtonOutlines in config")?,
+        enable_pixel_shift: base.enable_pixel_shift
+            .ok_or("missing EnablePixelShift in config")?,
+        adaptive_brightness: base.adaptive_brightness
+            .ok_or("missing AdaptiveBrightness in config")?,
+        active_brightness: base.active_brightness
+            .ok_or("missing ActiveBrightness in config")?,
         font_family: base.font_family.unwrap_or_default(),
         font_size: base.font_size.unwrap_or(20.0) as f32,
         font_bold,
@@ -255,12 +272,13 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         workspaces: base.workspaces.map(Into::into),
         volume: base.volume.map(Into::into),
     };
-    (cfg, layers)
+    Ok((cfg, layers))
 }
 
 pub struct ConfigManager {
     inotify_fd: Inotify,
     watch_desc: Option<WatchDescriptor>,
+    had_error: bool,
 }
 
 fn arm_inotify(inotify_fd: &Inotify) -> Option<WatchDescriptor> {
@@ -268,7 +286,10 @@ fn arm_inotify(inotify_fd: &Inotify) -> Option<WatchDescriptor> {
     match inotify_fd.add_watch(user_cfg_path(), flags) {
         Ok(wd) => Some(wd),
         Err(Errno::ENOENT) => None,
-        e => Some(e.unwrap()),
+        Err(e) => {
+            eprintln!("Warning: inotify add_watch failed: {e}");
+            None
+        }
     }
 }
 
@@ -279,9 +300,10 @@ impl ConfigManager {
         ConfigManager {
             inotify_fd,
             watch_desc,
+            had_error: false,
         }
     }
-    pub fn load_config(&self, width: u16) -> (Config, [FunctionLayer; 2]) {
+    pub fn load_config(&self, width: u16) -> Result<(Config, [FunctionLayer; 2]), String> {
         load_config(width)
     }
     pub fn update_config(
@@ -302,14 +324,25 @@ impl ConfigManager {
     #[cold]
     fn handle_events(&mut self, cfg: &mut Config, layers: &mut [FunctionLayer; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
         let mut ret = false;
-        for evt in evts.unwrap() {
+        for evt in evts.unwrap_or_default() {
             if Some(evt.wd) != self.watch_desc {
                 continue;
             }
-            let parts = load_config(width);
-            *cfg = parts.0;
-            *layers = parts.1;
-            ret = true;
+            match load_config(width) {
+                Ok(parts) => {
+                    *cfg = parts.0;
+                    *layers = parts.1;
+                    ret = true;
+                    if self.had_error {
+                        eprintln!("Config reloaded successfully");
+                        self.had_error = false;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: config reload failed: {e}, keeping previous config");
+                    self.had_error = true;
+                }
+            }
             self.watch_desc = arm_inotify(&self.inotify_fd);
         }
         ret
