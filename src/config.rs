@@ -51,6 +51,25 @@ impl From<WorkspacesConfigProxy> for WorkspacesConfig {
     }
 }
 
+#[derive(Clone)]
+pub struct VolumeConfig {
+    pub pulse_server: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct VolumeConfigProxy {
+    pulse_server: Option<String>,
+}
+
+impl From<VolumeConfigProxy> for VolumeConfig {
+    fn from(p: VolumeConfigProxy) -> Self {
+        Self {
+            pulse_server: p.pulse_server,
+        }
+    }
+}
+
 const LOCAL_CFG_PATH: &str = "config.toml";
 const SYSTEM_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
 
@@ -72,6 +91,7 @@ pub struct Config {
     pub font_bold: bool,
     pub font_italic: bool,
     pub workspaces: Option<WorkspacesConfig>,
+    pub volume: Option<VolumeConfig>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +108,7 @@ struct ConfigProxy {
     primary_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
     workspaces: Option<WorkspacesConfigProxy>,
+    volume: Option<VolumeConfigProxy>,
 }
 
 fn array_or_single<'de, D>(deserializer: D) -> Result<Vec<Key>, D::Error>
@@ -142,6 +163,7 @@ where
 pub struct ButtonConfig {
     #[serde(alias = "Svg")]
     pub icon: Option<String>,
+    pub theme: Option<String>,
     pub text: Option<String>,
     pub time: Option<String>,
     pub battery: Option<String>,
@@ -155,6 +177,7 @@ pub struct ButtonConfig {
     pub window_title: Option<bool>,
     pub memory: Option<bool>,
     pub load_avg: Option<bool>,
+    pub volume: Option<bool>,
     pub sample_interval: Option<u32>,
     pub graph_window: Option<u32>,
 }
@@ -178,6 +201,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
         base.active_brightness = user.active_brightness.or(base.active_brightness);
         base.workspaces = user.workspaces.or(base.workspaces);
+        base.volume = user.volume.or(base.volume);
     };
     let mut media_layer_keys = base.media_layer_keys.unwrap();
     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
@@ -187,6 +211,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                 0,
                 ButtonConfig {
                     icon: None,
+                    theme: None,
                     text: Some("esc".into()),
                     action: vec![Key::Esc],
                     width: None,
@@ -198,6 +223,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     window_title: None,
                     memory: None,
                     load_avg: None,
+                    volume: None,
                     sample_interval: None,
                     graph_window: None,
                 },
@@ -227,6 +253,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         font_bold,
         font_italic,
         workspaces: base.workspaces.map(Into::into),
+        volume: base.volume.map(Into::into),
     };
     (cfg, layers)
 }

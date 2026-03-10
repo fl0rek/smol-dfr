@@ -10,7 +10,7 @@ use iced_core::{
     Background, Color, Element, Font, Length, Pixels, Rectangle, Shell, Size, Theme,
 };
 use iced_graphics::Viewport;
-use iced_widget::{container, mouse_area, row, text, Stack};
+use iced_widget::{container, mouse_area, row, svg, text, Stack};
 use tiny_skia::Pixmap;
 
 use crate::battery_icon_widget::BatteryIconWidget;
@@ -24,12 +24,17 @@ pub enum Message {
     ButtonUp(usize),
     WorkspaceDown(u64),
     WorkspaceUp(u64),
+    VolumeDownPress,
+    VolumeDownRelease,
+    VolumeUpPress,
+    VolumeUpRelease,
 }
 
 #[derive(Debug, Clone)]
 pub enum ButtonAction {
     LayerButton(usize),
     Workspace(u64),
+    Volume { down_icon: Option<String>, up_icon: Option<String> },
     None,
 }
 
@@ -56,6 +61,8 @@ pub struct ButtonDef {
     pub graph_max_columns: Option<usize>,
     /// Battery info — when Some, renders a battery icon with fill level.
     pub battery: Option<BatteryInfo>,
+    /// SVG icon file path — when Some, renders the SVG instead of text.
+    pub icon: Option<String>,
 }
 
 pub struct TouchbarRenderer {
@@ -287,6 +294,82 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
             };
             let portion = (btn.width_fraction * 1000.0).round() as u16;
 
+            // Volume: single button with left/right touch zones for vol down/up
+            if let ButtonAction::Volume { ref down_icon, ref up_icon } = btn.action {
+                let make_icon = |icon: &Option<String>| -> Element<'_, Message, Theme, IcedRenderer> {
+                    if let Some(path) = icon {
+                        let handle = svg::Handle::from_path(path);
+                        svg::Svg::new(handle)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .content_fit(iced_core::ContentFit::Contain)
+                            .into()
+                    } else {
+                        text("").width(Length::Fill).height(Length::Fill).into()
+                    }
+                };
+
+                let left: Element<'_, Message, Theme, IcedRenderer> = container(
+                    mouse_area(make_icon(down_icon))
+                        .on_press(Message::VolumeDownPress)
+                        .on_release(Message::VolumeDownRelease)
+                        .on_exit(Message::VolumeDownRelease),
+                )
+                .width(Length::FillPortion(1))
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+
+                let center: Element<'_, Message, Theme, IcedRenderer> = container(
+                    text(btn.label.to_string())
+                        .font(font)
+                        .size(font_size)
+                        .color(Color::WHITE)
+                        .align_x(alignment::Horizontal::Center)
+                        .align_y(alignment::Vertical::Center)
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .width(Length::FillPortion(2))
+                .height(Length::Fill)
+                .into();
+
+                let right: Element<'_, Message, Theme, IcedRenderer> = container(
+                    mouse_area(make_icon(up_icon))
+                        .on_press(Message::VolumeUpPress)
+                        .on_release(Message::VolumeUpRelease)
+                        .on_exit(Message::VolumeUpRelease),
+                )
+                .width(Length::FillPortion(1))
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+
+                let vol_row = row(vec![left, center, right])
+                    .width(Length::Fill)
+                    .height(Length::Fill);
+
+                return container(
+                    container(vol_row)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(padding)
+                        .style(move |_theme: &Theme| container::Style {
+                            background: Some(Background::Color(bg)),
+                            border: iced_core::Border {
+                                radius: 8.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                )
+                .width(Length::FillPortion(portion))
+                .height(Length::Fill)
+                .into();
+            }
+
             let inner: Element<'_, Message, Theme, IcedRenderer> =
                 if let Some(ref info) = btn.battery {
                     if info.show_time {
@@ -365,6 +448,28 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
                             ..Default::default()
                         })
                         .into()
+                } else if let Some(ref icon_path) = btn.icon {
+                    let handle = svg::Handle::from_path(icon_path);
+                    container(
+                        svg::Svg::new(handle)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .content_fit(iced_core::ContentFit::Contain),
+                    )
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(padding)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(Background::Color(bg)),
+                        border: iced_core::Border {
+                            radius: 8.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .into()
                 } else {
                     container(
                         text(btn.label.to_string())
@@ -407,7 +512,7 @@ fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Elemen
                         .on_exit(Message::WorkspaceUp(id))
                         .into()
                 }
-                ButtonAction::None => inner.into(),
+                _ => inner.into(),
             };
 
             container(wrapped)

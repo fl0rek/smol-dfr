@@ -41,6 +41,7 @@ mod iced_renderer;
 mod memory_graph;
 mod memory_graph_widget;
 mod pixel_shift;
+mod volume;
 mod workspace;
 
 use crate::config::ConfigManager;
@@ -50,6 +51,7 @@ use display::DrmBackend;
 use iced_renderer::{BatteryInfo, ButtonAction, ButtonDef, Message as IcedMessage, TouchbarRenderer};
 use memory_graph::MemoryHistory;
 use pixel_shift::PixelShiftManager;
+use volume::VolumeManager;
 use workspace::WorkspaceManager;
 
 const TIMEOUT_MS: i32 = 10 * 1000;
@@ -63,7 +65,7 @@ enum BatteryState {
 
 enum ButtonImage {
     Text(String),
-    Icon(String),
+    Icon(Option<String>),
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String),
     Memory,
@@ -71,6 +73,7 @@ enum ButtonImage {
     Spacer,
     Workspaces,
     WindowTitle,
+    Volume,
 }
 
 struct Button {
@@ -195,6 +198,20 @@ fn get_load_avg() -> String {
 }
 
 
+fn resolve_icon_path(name: &str) -> Option<String> {
+    let candidates = [
+        format!("/etc/tiny-dfr/{name}.svg"),
+        format!("/usr/share/tiny-dfr/{name}.svg"),
+    ];
+    for path in &candidates {
+        if Path::new(path).exists() {
+            return Some(path.clone());
+        }
+    }
+    eprintln!("Warning: icon '{name}' not found");
+    None
+}
+
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
         let color = cfg.color;
@@ -242,6 +259,14 @@ impl Button {
                 image: ButtonImage::WindowTitle,
                 color: None,
             }
+        } else if cfg.volume == Some(true) {
+            Button {
+                action: vec![],
+                active: false,
+                changed: false,
+                image: ButtonImage::Volume,
+                color: None,
+            }
         } else {
             Button::new_spacer()
         };
@@ -267,9 +292,10 @@ impl Button {
         }
     }
     fn new_icon(name: impl AsRef<str>, action: Vec<Key>) -> Button {
+        let path = resolve_icon_path(name.as_ref());
         Button {
             action,
-            image: ButtonImage::Icon(name.as_ref().to_string()),
+            image: ButtonImage::Icon(path),
             active: false,
             changed: false,
             color: None,
@@ -454,6 +480,7 @@ where
 fn build_button_defs(
     layer: &FunctionLayer,
     ws: Option<(&WorkspaceManager, &WorkspacesConfig)>,
+    volume_mgr: Option<&VolumeManager>,
     memory_history: Option<&MemoryHistory>,
     blink_on: bool,
     show_battery_time: bool,
@@ -487,6 +514,7 @@ fn build_button_defs(
                         graph_data: None,
                         graph_max_columns: None,
                         battery: None,
+                        icon: None,
                     });
                 }
             }
@@ -503,6 +531,7 @@ fn build_button_defs(
                     graph_data: None,
                     graph_max_columns: None,
                     battery: None,
+                    icon: None,
                 });
             }
             ButtonImage::Spacer => {
@@ -515,6 +544,7 @@ fn build_button_defs(
                     graph_data: None,
                     graph_max_columns: None,
                     battery: None,
+                    icon: None,
                 });
             }
             ButtonImage::Memory => {
@@ -528,6 +558,7 @@ fn build_button_defs(
                         graph_data: Some(history.samples().iter().copied().collect()),
                         graph_max_columns: Some(history.max_samples()),
                         battery: None,
+                        icon: None,
                     });
                 } else {
                     defs.push(ButtonDef {
@@ -539,6 +570,7 @@ fn build_button_defs(
                         graph_data: None,
                         graph_max_columns: None,
                         battery: None,
+                        icon: None,
                     });
                 }
             }
@@ -565,6 +597,46 @@ fn build_button_defs(
                         },
                         show_time: show_battery_time,
                     }),
+                    icon: None,
+                });
+            }
+            ButtonImage::Volume => {
+                let label = if let Some(mgr) = volume_mgr {
+                    let vol = mgr.volume();
+                    if vol.muted {
+                        "muted".to_string()
+                    } else {
+                        format!("{}%", vol.volume_percent)
+                    }
+                } else {
+                    "Vol N/A".to_string()
+                };
+                defs.push(ButtonDef {
+                    label,
+                    active: b.active,
+                    width_fraction: *width_frac,
+                    color: b.color,
+                    action: ButtonAction::Volume {
+                        down_icon: resolve_icon_path("volume_down"),
+                        up_icon: resolve_icon_path("volume_up"),
+                    },
+                    graph_data: None,
+                    graph_max_columns: None,
+                    battery: None,
+                    icon: None,
+                });
+            }
+            ButtonImage::Icon(ref path) => {
+                defs.push(ButtonDef {
+                    label: String::new(),
+                    active: b.active,
+                    width_fraction: *width_frac,
+                    color: b.color,
+                    action: ButtonAction::LayerButton(idx),
+                    graph_data: None,
+                    graph_max_columns: None,
+                    battery: None,
+                    icon: path.clone(),
                 });
             }
             _ => {
@@ -577,7 +649,6 @@ fn build_button_defs(
                                 .to_string()
                         }
                         ButtonImage::LoadAvg => get_load_avg(),
-                        ButtonImage::Icon(_) => "?".to_string(),
                         _ => unreachable!(),
                     },
                     active: b.active,
@@ -587,6 +658,7 @@ fn build_button_defs(
                     graph_data: None,
                     graph_max_columns: None,
                     battery: None,
+                    icon: None,
                 });
             }
         }
@@ -636,6 +708,14 @@ fn real_main(drm: &mut DrmBackend) {
     });
     if workspace_mgr.is_none() && cfg.workspaces.is_some() {
         eprintln!("Warning: [Workspaces] configured but no provider available (is $NIRI_SOCKET set?)");
+    }
+
+    let volume_mgr = cfg.volume.as_ref().and_then(|vol_cfg| {
+        eprintln!("Volume config present, pulse_server={:?}", vol_cfg.pulse_server);
+        VolumeManager::try_new(vol_cfg.pulse_server.as_deref())
+    });
+    if volume_mgr.is_none() && cfg.volume.is_some() {
+        eprintln!("Warning: [Volume] configured but PulseAudio not available");
     }
 
     // drop privileges to input and video group
@@ -695,6 +775,11 @@ fn real_main(drm: &mut DrmBackend) {
             .add(mgr.event_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 4))
             .unwrap();
     }
+    if let Some(ref mgr) = volume_mgr {
+        epoll
+            .add(mgr.event_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 5))
+            .unwrap();
+    }
     uinput.set_evbit(EventKind::Key).unwrap();
     for layer in &layers {
         for button in &layer.buttons {
@@ -703,6 +788,8 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
     }
+    uinput.set_keybit(Key::VolumeDown).unwrap();
+    uinput.set_keybit(Key::VolumeUp).unwrap();
     let mut dev_name_c = [0 as c_char; 80];
     let dev_name = "Dynamic Function Row Virtual Input Device".as_bytes();
     for i in 0..dev_name.len() {
@@ -810,7 +897,7 @@ fn real_main(drm: &mut DrmBackend) {
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
-            let btn_defs = build_button_defs(&layers[active_layer], ws, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
+            let btn_defs = build_button_defs(&layers[active_layer], ws, volume_mgr.as_ref(), memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
             let buffer = iced_rndr.render_to_buffer(&btn_defs);
             drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
@@ -831,6 +918,11 @@ fn real_main(drm: &mut DrmBackend) {
         _ = udev_monitor.iter().last();
 
         if let Some(ref mgr) = workspace_mgr {
+            if mgr.poll() {
+                needs_complete_redraw = true;
+            }
+        }
+        if let Some(ref mgr) = volume_mgr {
             if mgr.poll() {
                 needs_complete_redraw = true;
             }
@@ -908,7 +1000,7 @@ fn real_main(drm: &mut DrmBackend) {
                     };
 
                     let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
-                    let btn_defs = build_button_defs(&layers[active_layer], ws, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
+                    let btn_defs = build_button_defs(&layers[active_layer], ws, volume_mgr.as_ref(), memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
                     let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
 
                     for msg in messages {
@@ -940,6 +1032,20 @@ fn real_main(drm: &mut DrmBackend) {
                                 if let Some(ref mgr) = workspace_mgr {
                                     mgr.focus_workspace(id);
                                 }
+                            }
+                            IcedMessage::VolumeDownPress => {
+                                toggle_keys(&mut uinput, &vec![Key::VolumeDown], 1);
+                            }
+                            IcedMessage::VolumeDownRelease => {
+                                toggle_keys(&mut uinput, &vec![Key::VolumeDown], 0);
+                                needs_complete_redraw = true;
+                            }
+                            IcedMessage::VolumeUpPress => {
+                                toggle_keys(&mut uinput, &vec![Key::VolumeUp], 1);
+                            }
+                            IcedMessage::VolumeUpRelease => {
+                                toggle_keys(&mut uinput, &vec![Key::VolumeUp], 0);
+                                needs_complete_redraw = true;
                             }
                         }
                     }

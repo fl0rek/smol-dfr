@@ -26,6 +26,7 @@
               pkgs.gdk-pixbuf
               pkgs.libxml2
               pkgs.librsvg
+              pkgs.libpulseaudio
             ];
 
             postConfigure = ''
