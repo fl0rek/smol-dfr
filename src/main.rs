@@ -34,15 +34,12 @@ mod widgets;
 mod workspace;
 
 use backlight::BacklightManager;
-use config::ConfigManager;
 use display::DrmBackend;
 use iced_renderer::TouchbarRenderer;
+use layer_manager::LayerManager;
 use pixel_shift::PixelShiftManager;
 use reconnect::ReconnectWatcher;
-use widgets::{
-    build_widget_layer, focus_workspace, get_window_title,
-    FdRegistry, MainLoopAction, Message, RenderContext, Widget,
-};
+use widgets::{MainLoopAction, Message, RenderContext, WidgetAction};
 
 const TIMEOUT_MS: i32 = 10 * 1000;
 const RECONNECT_COOLDOWN_SECS: u64 = 2;
@@ -92,8 +89,6 @@ fn real_main(drm: &mut DrmBackend) {
     let (db_width, _) = drm.fb_info().unwrap().size();
     let mut uinput = UInputHandle::new(OpenOptions::new().write(true).open("/dev/uinput").unwrap());
     let mut backlight = BacklightManager::new();
-    let mut cfg_mgr = ConfigManager::new();
-    let (mut cfg, mut button_cfgs) = cfg_mgr.load_config(width).expect("Failed to load config");
     let mut pixel_shift = PixelShiftManager::new();
 
     // Privilege drop
@@ -118,20 +113,6 @@ fn real_main(drm: &mut DrmBackend) {
         }
     }
 
-    let mut layers: [Vec<Box<dyn Widget>>; 2] = [
-        build_widget_layer(&button_cfgs[0], cfg.workspaces.as_ref(), cfg.volume.as_ref()),
-        build_widget_layer(&button_cfgs[1], cfg.workspaces.as_ref(), cfg.volume.as_ref()),
-    ];
-    let mut iced_rndr = TouchbarRenderer::new(
-        width as u32, height as u32, db_width as u32,
-        &cfg.font_family, cfg.font_size, cfg.font_bold, cfg.font_italic,
-    );
-    let mut active_layer = 0;
-    let mut needs_redraw = true;
-    let mut blink_on = true;
-    let mut last_blink = Instant::now();
-    let mut battery_time_until: Option<Instant> = None;
-
     // Input setup
     let mut input_tb = Libinput::new_with_udev(Interface);
     let mut input_main = Libinput::new_with_udev(Interface);
@@ -141,24 +122,20 @@ fn real_main(drm: &mut DrmBackend) {
     let epoll = Epoll::new(EpollCreateFlags::empty()).unwrap();
     epoll.add(input_main.as_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 0)).unwrap();
     epoll.add(input_tb.as_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 1)).unwrap();
-    epoll.add(cfg_mgr.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 2)).unwrap();
+    // data=2 is registered by LayerManager::new() for config fd
     epoll.add(&udev_monitor, EpollEvent::new(EpollFlags::EPOLLIN, 3)).unwrap();
-    let mut _fd_registry = FdRegistry::new(10);
-    for (li, l) in layers.iter().enumerate() { for (wi, w) in l.iter().enumerate() {
-        let fds = w.event_fds();
-        if !fds.is_empty() { _fd_registry.register(&epoll, li * 1000 + wi, &fds); }
-    }}
 
-    let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
-    let mut reconnect_watcher = ReconnectWatcher::new(&xdg_runtime_dir);
-    epoll.add(reconnect_watcher.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 6)).unwrap();
-    let mut last_reconnect: Option<Instant> = None;
+    let mut layer_mgr = LayerManager::new(width, &epoll);
+    let cfg = layer_mgr.config();
+    let mut iced_rndr = TouchbarRenderer::new(
+        width as u32, height as u32, db_width as u32,
+        &cfg.font_family, cfg.font_size, cfg.font_bold, cfg.font_italic,
+    );
 
     // Uinput setup
     uinput.set_evbit(EventKind::Key).unwrap();
     for k in &[Key::VolumeDown, Key::VolumeUp, Key::Esc] { uinput.set_keybit(*k).unwrap(); }
-    for lc in &button_cfgs { for bc in lc { for k in &bc.action { uinput.set_keybit(*k).unwrap(); } } }
+    for k in &layer_mgr.all_key_actions() { uinput.set_keybit(*k).unwrap(); }
     let mut dev_name_c = [0 as c_char; 80];
     let dn = "Dynamic Function Row Virtual Input Device".as_bytes();
     for i in 0..dn.len() { dev_name_c[i] = dn[i] as c_char; }
@@ -168,36 +145,41 @@ fn real_main(drm: &mut DrmBackend) {
     }).unwrap();
     uinput.dev_create().unwrap();
 
+    let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let mut reconnect_watcher = ReconnectWatcher::new(&xdg_runtime_dir);
+    epoll.add(reconnect_watcher.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 6)).unwrap();
+    let mut last_reconnect: Option<Instant> = None;
+
+    let mut needs_redraw = true;
+    let mut blink_on = true;
+    let mut last_blink = Instant::now();
+    let mut battery_time_until: Option<Instant> = None;
     let mut digitizer: Option<InputDevice> = None;
     let mut touch_positions: HashMap<u32, iced_core::Point> = HashMap::new();
-    let mut last_redraw_ts = if layers[active_layer].iter().any(|w| w.needs_faster_refresh()) {
+    let mut last_redraw_ts = if layer_mgr.needs_faster_refresh() {
         Local::now().second()
     } else { Local::now().minute() };
 
     loop {
-        if cfg_mgr.update_config(&mut cfg, &mut button_cfgs, width) {
-            active_layer = 0; needs_redraw = true;
-            iced_rndr = TouchbarRenderer::new(width as u32, height as u32, db_width as u32,
-                &cfg.font_family, cfg.font_size, cfg.font_bold, cfg.font_italic);
-            layers = [
-                build_widget_layer(&button_cfgs[0], cfg.workspaces.as_ref(), cfg.volume.as_ref()),
-                build_widget_layer(&button_cfgs[1], cfg.workspaces.as_ref(), cfg.volume.as_ref()),
-            ];
-            _fd_registry = FdRegistry::new(10);
-            for (li, l) in layers.iter().enumerate() { for (wi, w) in l.iter().enumerate() {
-                let fds = w.event_fds();
-                if !fds.is_empty() { _fd_registry.register(&epoll, li * 1000 + wi, &fds); }
-            }}
+        if layer_mgr.check_config_reload(&epoll) {
+            let cfg = layer_mgr.config();
+            iced_rndr = TouchbarRenderer::new(
+                width as u32, height as u32, db_width as u32,
+                &cfg.font_family, cfg.font_size, cfg.font_bold, cfg.font_italic,
+            );
+            needs_redraw = true;
         }
 
         let now = Local::now();
+        let cfg = layer_mgr.config();
         let mut timeout = min(((60 - now.second()) * 1000) as i32, TIMEOUT_MS);
         if cfg.enable_pixel_shift {
             let (ps_redraw, ps_t) = pixel_shift.update();
             if ps_redraw { needs_redraw = true; }
             timeout = min(timeout, ps_t);
         }
-        let faster = layers[active_layer].iter().any(|w| w.needs_faster_refresh());
+        let faster = layer_mgr.needs_faster_refresh();
         let ts = if faster { Local::now().second() } else { Local::now().minute() };
         if ts != last_redraw_ts { needs_redraw = true; last_redraw_ts = ts; }
 
@@ -212,11 +194,11 @@ fn real_main(drm: &mut DrmBackend) {
             else { timeout = min(timeout, deadline.duration_since(now_i).as_millis() as i32); }
         }
 
-        for w in &mut layers[active_layer] { if w.update() { needs_redraw = true; } }
+        if layer_mgr.update() { needs_redraw = true; }
 
         if needs_redraw {
-            let ctx = RenderContext { font: iced_rndr.font(), font_size: iced_rndr.font_size(), blink_on, show_battery_time: battery_time_until.is_some(), window_title: get_window_title(&layers[active_layer]) };
-            let buf = iced_rndr.render_widgets(&layers[active_layer], &ctx);
+            let ctx = RenderContext { font: iced_rndr.font(), font_size: iced_rndr.font_size(), blink_on, show_battery_time: battery_time_until.is_some(), window_title: layer_mgr.window_title() };
+            let buf = iced_rndr.render_widgets(layer_mgr.active_widgets(), &ctx);
             drm.map().unwrap().as_mut()[..buf.len()].copy_from_slice(&buf);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
             needs_redraw = false;
@@ -224,22 +206,17 @@ fn real_main(drm: &mut DrmBackend) {
 
         let _ = epoll.wait(&mut [EpollEvent::new(EpollFlags::EPOLLIN, 0)], timeout as u16);
         _ = udev_monitor.iter().last();
-        for w in &mut layers[active_layer] { if w.poll() { needs_redraw = true; } }
+        if layer_mgr.poll() { needs_redraw = true; }
 
         // Reconnection
         let re = reconnect_watcher.check_events();
         reconnect_watcher.ensure_watches();
         if re.niri || re.pulse {
-            for w in &mut layers[active_layer] {
-                if !w.is_connected() && w.try_connect() { needs_redraw = true; }
-            }
+            if layer_mgr.reconnect() { needs_redraw = true; }
         }
-        let any_disc = layers[active_layer].iter().any(|w| !w.is_connected());
-        if any_disc && last_reconnect.map_or(true, |t| t.elapsed().as_secs() >= RECONNECT_COOLDOWN_SECS) {
+        if layer_mgr.any_disconnected() && last_reconnect.map_or(true, |t| t.elapsed().as_secs() >= RECONNECT_COOLDOWN_SECS) {
             last_reconnect = Some(Instant::now());
-            for w in &mut layers[active_layer] {
-                if !w.is_connected() && w.try_connect() { needs_redraw = true; }
-            }
+            if layer_mgr.reconnect() { needs_redraw = true; }
         }
 
         // Input
@@ -254,33 +231,35 @@ fn real_main(drm: &mut DrmBackend) {
                 }
                 Event::Keyboard(KeyboardEvent::Key(key)) if key.key() == Key::Fn as u32 => {
                     let nl = if key.key_state() == KeyState::Pressed { 1 } else { 0 };
-                    if active_layer != nl { active_layer = nl; needs_redraw = true; }
+                    if layer_mgr.active_layer() != nl { layer_mgr.switch_layer(nl); needs_redraw = true; }
                 }
                 Event::Touch(te) => {
                     if Some(te.device()) != digitizer || backlight.current_bl() == 0 { continue; }
                     let Some((iced_evt, cursor)) = iced_renderer::translate_touch(&te, &mut touch_positions, width, height) else { continue };
-                    let ctx = RenderContext { font: iced_rndr.font(), font_size: iced_rndr.font_size(), blink_on, show_battery_time: battery_time_until.is_some(), window_title: get_window_title(&layers[active_layer]) };
-                    for msg in iced_rndr.process_touch_widgets(iced_evt, cursor, &layers[active_layer], &ctx) {
-                        dispatch_message(msg, &mut layers[active_layer], &mut uinput, &mut battery_time_until, &mut needs_redraw);
+                    let ctx = RenderContext { font: iced_rndr.font(), font_size: iced_rndr.font_size(), blink_on, show_battery_time: battery_time_until.is_some(), window_title: layer_mgr.window_title() };
+                    for msg in iced_rndr.process_touch_widgets(iced_evt, cursor, layer_mgr.active_widgets(), &ctx) {
+                        dispatch_message(msg, &mut layer_mgr, &mut uinput, &mut battery_time_until, &mut needs_redraw);
                     }
                 }
                 _ => {}
             }
         }
-        backlight.update_backlight(&cfg);
+        backlight.update_backlight(layer_mgr.config());
     }
 }
 
 fn dispatch_message<F: AsRawFd>(
-    msg: Message, layer: &mut [Box<dyn Widget>], uinput: &mut UInputHandle<F>,
+    msg: Message, layer_mgr: &mut LayerManager, uinput: &mut UInputHandle<F>,
     btu: &mut Option<Instant>, redraw: &mut bool,
 ) {
-    let widget_action = |layer: &mut [Box<dyn Widget>], idx: usize, action, uinput: &mut UInputHandle<F>, btu: &mut Option<Instant>, redraw: &mut bool| {
+    let widget_action = |layer_mgr: &mut LayerManager, idx: usize, action, uinput: &mut UInputHandle<F>, btu: &mut Option<Instant>, redraw: &mut bool| {
+        let layer = layer_mgr.active_widgets_mut();
         if idx < layer.len() {
-            for a in layer[idx].handle_event(action) {
+            let actions: Vec<_> = layer[idx].handle_event(action);
+            for a in actions {
                 match &a {
                     MainLoopAction::SendKeys(k, p) => { toggle_keys(uinput, k, if *p {1} else {0}); *redraw = true; }
-                    MainLoopAction::FocusWorkspace(id) => focus_workspace(layer, *id),
+                    MainLoopAction::FocusWorkspace(id) => layer_mgr.focus_workspace(*id),
                     MainLoopAction::TriggerRedraw => *redraw = true,
                     MainLoopAction::ShowBatteryTime => { *btu = Some(Instant::now() + std::time::Duration::from_secs(2)); *redraw = true; }
                 }
@@ -288,10 +267,10 @@ fn dispatch_message<F: AsRawFd>(
         }
     };
     match msg {
-        Message::WidgetPressed(i) => widget_action(layer, i, widgets::WidgetAction::Pressed, uinput, btu, redraw),
-        Message::WidgetReleased(i) => widget_action(layer, i, widgets::WidgetAction::Released, uinput, btu, redraw),
+        Message::WidgetPressed(i) => widget_action(layer_mgr, i, WidgetAction::Pressed, uinput, btu, redraw),
+        Message::WidgetReleased(i) => widget_action(layer_mgr, i, WidgetAction::Released, uinput, btu, redraw),
         Message::WorkspaceDown(_) => *redraw = true,
-        Message::WorkspaceUp(id) => focus_workspace(layer, id),
+        Message::WorkspaceUp(id) => layer_mgr.focus_workspace(id),
         Message::VolumeDownPress => toggle_keys(uinput, &[Key::VolumeDown], 1),
         Message::VolumeDownRelease => { toggle_keys(uinput, &[Key::VolumeDown], 0); *redraw = true; }
         Message::VolumeUpPress => toggle_keys(uinput, &[Key::VolumeUp], 1),

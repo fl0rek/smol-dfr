@@ -63,7 +63,7 @@ pub enum Message {
 }
 
 /// Centralized epoll fd registration for widgets.
-pub struct FdRegistry {
+pub(crate) struct FdRegistry {
     entries: Vec<(u64, usize)>,
     next_data: u64,
 }
@@ -153,7 +153,7 @@ pub trait Widget {
 }
 
 /// Build a widget layer from widget entries.
-pub fn build_widget_layer(
+pub(crate) fn build_widget_layer(
     entries: &[crate::config::WidgetEntry],
     ws_cfg: Option<&crate::config::WorkspacesConfig>,
     vol_cfg: Option<&crate::config::VolumeConfig>,
@@ -245,23 +245,6 @@ pub fn build_widget_layer(
             w
         })
         .collect()
-}
-
-/// Get the window title from the workspace widget, if any.
-pub fn get_window_title(widgets: &[Box<dyn Widget>]) -> String {
-    for widget in widgets {
-        if let Some(title) = widget.window_title() {
-            return title;
-        }
-    }
-    String::new()
-}
-
-/// Focus a workspace by finding the WorkspaceWidget and calling focus_workspace.
-pub fn focus_workspace(widgets: &[Box<dyn Widget>], id: u64) {
-    for widget in widgets {
-        widget.focus_workspace_if_applicable(id);
-    }
 }
 
 /// Resolve an icon name to an SVG file path.
