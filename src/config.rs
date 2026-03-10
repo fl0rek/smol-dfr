@@ -1,4 +1,3 @@
-use crate::FunctionLayer;
 use anyhow::Error;
 use input_linux::Key;
 use nix::{
@@ -183,7 +182,7 @@ pub struct ButtonConfig {
     pub graph_window: Option<u32>,
 }
 
-fn load_config(width: u16) -> Result<(Config, [FunctionLayer; 2]), String> {
+fn load_config(width: u16) -> Result<(Config, [Vec<ButtonConfig>; 2]), String> {
     // System config failure is fatal -- this is an installation problem
     let mut base =
         toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
@@ -241,14 +240,12 @@ fn load_config(width: u16) -> Result<(Config, [FunctionLayer; 2]), String> {
             );
         }
     }
-    let media_layer = FunctionLayer::with_config(media_layer_keys);
-    let fkey_layer = FunctionLayer::with_config(primary_layer_keys);
     let media_layer_default = base.media_layer_default
         .ok_or("missing MediaLayerDefault in config")?;
-    let layers = if media_layer_default {
-        [media_layer, fkey_layer]
+    let button_layers = if media_layer_default {
+        [media_layer_keys, primary_layer_keys]
     } else {
-        [fkey_layer, media_layer]
+        [primary_layer_keys, media_layer_keys]
     };
     let font_style = base.font_style.as_deref().unwrap_or("");
     let font_bold = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("bold"));
@@ -272,7 +269,7 @@ fn load_config(width: u16) -> Result<(Config, [FunctionLayer; 2]), String> {
         workspaces: base.workspaces.map(Into::into),
         volume: base.volume.map(Into::into),
     };
-    Ok((cfg, layers))
+    Ok((cfg, button_layers))
 }
 
 pub struct ConfigManager {
@@ -303,13 +300,13 @@ impl ConfigManager {
             had_error: false,
         }
     }
-    pub fn load_config(&self, width: u16) -> Result<(Config, [FunctionLayer; 2]), String> {
+    pub fn load_config(&self, width: u16) -> Result<(Config, [Vec<ButtonConfig>; 2]), String> {
         load_config(width)
     }
     pub fn update_config(
         &mut self,
         cfg: &mut Config,
-        layers: &mut [FunctionLayer; 2],
+        layers: &mut [Vec<ButtonConfig>; 2],
         width: u16,
     ) -> bool {
         if self.watch_desc.is_none() {
@@ -322,7 +319,7 @@ impl ConfigManager {
         }
     }
     #[cold]
-    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [FunctionLayer; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
+    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [Vec<ButtonConfig>; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
         let mut ret = false;
         for evt in evts.unwrap_or_default() {
             if Some(evt.wd) != self.watch_desc {

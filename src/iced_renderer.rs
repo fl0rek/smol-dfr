@@ -1,4 +1,3 @@
-use iced_core::alignment;
 use iced_core::clipboard;
 use iced_core::layout::{Layout, Limits};
 use iced_core::mouse;
@@ -7,76 +6,26 @@ use iced_core::widget::Tree;
 use iced_core::Renderer as _;
 use iced_core::font::{Family, Stretch, Style, Weight};
 use iced_core::{
-    Background, Color, Element, Font, Length, Pixels, Rectangle, Shell, Size, Theme,
+    Color, Element, Font, Pixels, Rectangle, Shell, Size, Theme,
 };
 use iced_graphics::Viewport;
-use iced_widget::{container, mouse_area, row, svg, text, Stack};
+use iced_widget::{container, mouse_area, row};
+use iced_core::Length;
 use tiny_skia::Pixmap;
 
-use crate::battery_icon_widget::BatteryIconWidget;
-use crate::memory_graph_widget::MemoryGraphWidget;
-use crate::widgets::{self, RenderContext, Widget, Message as WidgetMessage};
+use crate::widgets::{RenderContext, Widget, Message as WidgetMessage};
 
 type IcedRenderer = iced_tiny_skia::Renderer;
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    ButtonDown(usize),
-    ButtonUp(usize),
-    WorkspaceDown(u64),
-    WorkspaceUp(u64),
-    VolumeDownPress,
-    VolumeDownRelease,
-    VolumeUpPress,
-    VolumeUpRelease,
-}
-
-#[derive(Debug, Clone)]
-pub enum ButtonAction {
-    LayerButton(usize),
-    Workspace(u64),
-    Volume { down_icon: Option<String>, up_icon: Option<String> },
-    None,
-}
-
-#[derive(Debug, Clone)]
-pub struct BatteryInfo {
-    pub capacity: u32,
-    pub charging: bool,
-    pub blink_on: bool,
-    pub time_estimate: Option<String>,
-    pub show_time: bool,
-}
-
-pub struct ButtonDef {
-    pub label: String,
-    pub active: bool,
-    /// Fraction of available width (0.0–1.0) this button should occupy.
-    pub width_fraction: f64,
-    /// Optional custom background color as (r, g, b) in 0.0–1.0.
-    pub color: Option<(f64, f64, f64)>,
-    pub action: ButtonAction,
-    /// Memory graph data — when Some, renders a bar graph instead of text.
-    pub graph_data: Option<Vec<u32>>,
-    /// Maximum columns for the memory graph.
-    pub graph_max_columns: Option<usize>,
-    /// Battery info — when Some, renders a battery icon with fill level.
-    pub battery: Option<BatteryInfo>,
-    /// SVG icon file path — when Some, renders the SVG instead of text.
-    pub icon: Option<String>,
-}
-
 pub struct TouchbarRenderer {
     renderer: IcedRenderer,
-    /// Long axis (≈2170)
+    /// Long axis (~2170)
     logical_width: u32,
-    /// Visible short axis from DRM mode (≈60) — used for widget layout
+    /// Visible short axis from DRM mode (~60) -- used for widget layout
     visible_height: u32,
-    /// Framebuffer short axis (64) — used for pixmap/rotation buffer size
+    /// Framebuffer short axis (64) -- used for pixmap/rotation buffer size
     fb_height: u32,
-    /// Persistent widget tree for the old ButtonDef rendering path
-    tree: Option<Tree>,
-    /// Persistent widget tree for the new Widget rendering path
+    /// Persistent widget tree for the Widget rendering path
     widget_tree: Option<Tree>,
     font: Font,
     font_size: f32,
@@ -109,11 +58,18 @@ impl TouchbarRenderer {
             logical_width,
             visible_height,
             fb_height,
-            tree: None,
             widget_tree: None,
             font,
             font_size,
         }
+    }
+
+    pub fn font(&self) -> Font {
+        self.font
+    }
+
+    pub fn font_size(&self) -> f32 {
+        self.font_size
     }
 
     /// Sync a persistent tree with a widget structure.
@@ -127,8 +83,7 @@ impl TouchbarRenderer {
         }
     }
 
-    /// Shared layout+draw+rotate pipeline used by both rendering paths.
-    /// Takes a prepared element and its synced tree, renders to a rotated XRGB8888 buffer.
+    /// Shared layout+draw+rotate pipeline.
     fn render_element<M: 'static>(
         &mut self,
         element: &Element<'_, M, Theme, IcedRenderer>,
@@ -221,21 +176,6 @@ impl TouchbarRenderer {
         rotated
     }
 
-    /// Build the old ButtonDef widget tree, render it to a pixmap, and return the
-    /// rotated XRGB8888 buffer ready for the DRM framebuffer.
-    pub fn render_to_buffer(&mut self, buttons: &[ButtonDef]) -> Vec<u8> {
-        self.renderer.clear();
-
-        let element = build_button_row(buttons, self.font, self.font_size);
-        Self::sync_tree_slot(&mut self.tree, &element);
-        let mut tree = self.tree.take().unwrap();
-
-        let rotated = self.render_element(&element, &mut tree);
-
-        self.tree = Some(tree);
-        rotated
-    }
-
     /// Render a list of Widget trait objects to a rotated XRGB8888 buffer.
     pub fn render_widgets(
         &mut self,
@@ -254,51 +194,7 @@ impl TouchbarRenderer {
         rotated
     }
 
-    /// Process a touch event through the old ButtonDef widget tree.
-    /// Returns messages produced by widget interactions (ButtonDown/ButtonUp).
-    pub fn process_touch(
-        &mut self,
-        iced_event: iced_core::Event,
-        cursor: mouse::Cursor,
-        buttons: &[ButtonDef],
-    ) -> Vec<Message> {
-        let mut element = build_button_row(buttons, self.font, self.font_size);
-        Self::sync_tree_slot(&mut self.tree, &element);
-        let mut tree = self.tree.take().unwrap();
-
-        let w = self.logical_width;
-        let vis_h = self.visible_height;
-
-        let limits = Limits::new(Size::ZERO, Size::new(w as f32, vis_h as f32));
-        let node = element.as_widget().layout(&mut tree, &self.renderer, &limits);
-        let layout = Layout::new(&node);
-
-        let mut messages = Vec::new();
-        let mut shell = Shell::new(&mut messages);
-        let viewport = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: w as f32,
-            height: vis_h as f32,
-        };
-
-        element.as_widget_mut().on_event(
-            &mut tree,
-            iced_event,
-            layout,
-            cursor,
-            &self.renderer,
-            &mut clipboard::Null,
-            &mut shell,
-            &viewport,
-        );
-
-        self.tree = Some(tree);
-        messages
-    }
-
-    /// Process a touch event through the new Widget rendering path.
-    /// Returns WidgetMessage values produced by widget interactions.
+    /// Process a touch event through the Widget rendering path.
     pub fn process_touch_widgets(
         &mut self,
         iced_event: iced_core::Event,
@@ -342,263 +238,57 @@ impl TouchbarRenderer {
     }
 }
 
-fn build_button_row(buttons: &[ButtonDef], font: Font, font_size: f32) -> Element<'_, Message, Theme, IcedRenderer> {
-    let spacing = 4;
-    let padding = 2;
-
-    let children: Vec<Element<'_, Message, Theme, IcedRenderer>> = buttons
-        .iter()
-        .map(|btn| {
-            let bg = match btn.color {
-                Some((r, g, b)) => {
-                    let scale = if btn.active { 1.0 } else { 0.5 };
-                    Color::from_rgb(r as f32 * scale, g as f32 * scale, b as f32 * scale)
-                }
-                None => {
-                    let v = if btn.active { 0.4 } else { 0.2 };
-                    Color::from_rgb(v, v, v)
-                }
-            };
-            let portion = (btn.width_fraction * 1000.0).round() as u16;
-
-            // Volume: single button with left/right touch zones for vol down/up
-            if let ButtonAction::Volume { ref down_icon, ref up_icon } = btn.action {
-                let make_icon = |icon: &Option<String>| -> Element<'_, Message, Theme, IcedRenderer> {
-                    if let Some(path) = icon {
-                        let handle = svg::Handle::from_path(path);
-                        svg::Svg::new(handle)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .content_fit(iced_core::ContentFit::Contain)
-                            .into()
-                    } else {
-                        text("").width(Length::Fill).height(Length::Fill).into()
-                    }
-                };
-
-                let left: Element<'_, Message, Theme, IcedRenderer> = container(
-                    mouse_area(make_icon(down_icon))
-                        .on_press(Message::VolumeDownPress)
-                        .on_release(Message::VolumeDownRelease)
-                        .on_exit(Message::VolumeDownRelease),
-                )
-                .width(Length::FillPortion(1))
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
-
-                let center: Element<'_, Message, Theme, IcedRenderer> = container(
-                    text(btn.label.to_string())
-                        .font(font)
-                        .size(font_size)
-                        .color(Color::WHITE)
-                        .align_x(alignment::Horizontal::Center)
-                        .align_y(alignment::Vertical::Center)
-                        .width(Length::Fill)
-                        .height(Length::Fill),
-                )
-                .width(Length::FillPortion(2))
-                .height(Length::Fill)
-                .into();
-
-                let right: Element<'_, Message, Theme, IcedRenderer> = container(
-                    mouse_area(make_icon(up_icon))
-                        .on_press(Message::VolumeUpPress)
-                        .on_release(Message::VolumeUpRelease)
-                        .on_exit(Message::VolumeUpRelease),
-                )
-                .width(Length::FillPortion(1))
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .into();
-
-                let vol_row = row(vec![left, center, right])
-                    .width(Length::Fill)
-                    .height(Length::Fill);
-
-                return container(
-                    container(vol_row)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(padding)
-                        .style(move |_theme: &Theme| container::Style {
-                            background: Some(Background::Color(bg)),
-                            border: iced_core::Border {
-                                radius: 8.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        }),
-                )
-                .width(Length::FillPortion(portion))
-                .height(Length::Fill)
-                .into();
-            }
-
-            let inner: Element<'_, Message, Theme, IcedRenderer> =
-                if let Some(ref info) = btn.battery {
-                    if info.show_time {
-                        let time_text = info
-                            .time_estimate
-                            .as_deref()
-                            .unwrap_or("N/A");
-                        let text_color = if info.charging {
-                            Color::from_rgb(0.3, 0.9, 0.3)
-                        } else {
-                            Color::WHITE
-                        };
-                        container(
-                            text(time_text.to_string())
-                                .font(font)
-                                .size(font_size * 0.75)
-                                .color(text_color)
-                                .align_x(alignment::Horizontal::Center)
-                                .align_y(alignment::Vertical::Center)
-                                .width(Length::Fill)
-                                .height(Length::Fill),
-                        )
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(padding)
-                        .style(move |_theme: &Theme| container::Style {
-                            background: Some(Background::Color(bg)),
-                            border: iced_core::Border {
-                                radius: 8.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                    } else {
-                        let icon = BatteryIconWidget::new(info.capacity, info.charging, info.blink_on);
-                        let label = text(btn.label.to_string())
-                            .font(font)
-                            .size(font_size * 0.75)
-                            .color(Color::WHITE)
-                            .align_x(alignment::Horizontal::Center)
-                            .align_y(alignment::Vertical::Center)
-                            .width(Length::Fill)
-                            .height(Length::Fill);
-                        let stacked: Element<'_, Message, Theme, IcedRenderer> = Stack::new()
-                            .push(icon)
-                            .push(label)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .into();
-                        container(stacked)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .padding(padding)
-                            .style(move |_theme: &Theme| container::Style {
-                                background: Some(Background::Color(bg)),
-                                border: iced_core::Border {
-                                    radius: 8.0.into(),
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            })
-                            .into()
-                    }
-                } else if let (Some(data), Some(max_cols)) = (&btn.graph_data, btn.graph_max_columns) {
-                    container(MemoryGraphWidget::new(data.clone(), max_cols))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(padding)
-                        .style(move |_theme: &Theme| container::Style {
-                            background: Some(Background::Color(bg)),
-                            border: iced_core::Border {
-                                radius: 8.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                } else if let Some(ref icon_path) = btn.icon {
-                    let handle = svg::Handle::from_path(icon_path);
-                    container(
-                        svg::Svg::new(handle)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .content_fit(iced_core::ContentFit::Contain),
-                    )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(padding)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill)
-                    .style(move |_theme: &Theme| container::Style {
-                        background: Some(Background::Color(bg)),
-                        border: iced_core::Border {
-                            radius: 8.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .into()
-                } else {
-                    container(
-                        text(btn.label.to_string())
-                            .font(font)
-                            .size(font_size)
-                            .color(Color::WHITE)
-                            .align_x(alignment::Horizontal::Center)
-                            .align_y(alignment::Vertical::Center)
-                            .width(Length::Fill)
-                            .height(Length::Fill),
-                    )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(padding)
-                    .style(move |_theme: &Theme| container::Style {
-                        background: Some(Background::Color(bg)),
-                        border: iced_core::Border {
-                            radius: 8.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .into()
-                };
-
-            let wrapped: Element<'_, Message, Theme, IcedRenderer> = match &btn.action {
-                ButtonAction::LayerButton(idx) => {
-                    let idx = *idx;
-                    mouse_area(inner)
-                        .on_press(Message::ButtonDown(idx))
-                        .on_release(Message::ButtonUp(idx))
-                        .on_exit(Message::ButtonUp(idx))
-                        .into()
-                }
-                ButtonAction::Workspace(id) => {
-                    let id = *id;
-                    mouse_area(inner)
-                        .on_press(Message::WorkspaceDown(id))
-                        .on_release(Message::WorkspaceUp(id))
-                        .on_exit(Message::WorkspaceUp(id))
-                        .into()
-                }
-                _ => inner.into(),
-            };
-
-            container(wrapped)
-                .width(Length::FillPortion(portion))
-                .height(Length::Fill)
-                .into()
-        })
-        .collect();
-
-    container(
-        row(children)
-            .spacing(spacing)
-            .height(Length::Fill)
-            .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .padding(2)
-    .into()
+/// Translate a libinput touch event into an iced Event + Cursor.
+pub fn translate_touch(
+    te: &input::event::touch::TouchEvent,
+    touch_positions: &mut std::collections::HashMap<u32, iced_core::Point>,
+    width: u16,
+    height: u16,
+) -> Option<(iced_core::Event, mouse::Cursor)> {
+    use input::event::touch::{TouchEventPosition, TouchEventSlot};
+    match te {
+        input::event::touch::TouchEvent::Down(dn) => {
+            let pos = iced_core::Point::new(
+                dn.x_transformed(width as u32) as f32,
+                dn.y_transformed(height as u32) as f32,
+            );
+            touch_positions.insert(dn.seat_slot(), pos);
+            Some((
+                iced_core::Event::Touch(iced_core::touch::Event::FingerPressed {
+                    id: iced_core::touch::Finger(dn.seat_slot() as u64),
+                    position: pos,
+                }),
+                mouse::Cursor::Available(pos),
+            ))
+        }
+        input::event::touch::TouchEvent::Motion(mv) => {
+            let pos = iced_core::Point::new(
+                mv.x_transformed(width as u32) as f32,
+                mv.y_transformed(height as u32) as f32,
+            );
+            touch_positions.insert(mv.seat_slot(), pos);
+            Some((
+                iced_core::Event::Touch(iced_core::touch::Event::FingerMoved {
+                    id: iced_core::touch::Finger(mv.seat_slot() as u64),
+                    position: pos,
+                }),
+                mouse::Cursor::Available(pos),
+            ))
+        }
+        input::event::touch::TouchEvent::Up(up) => {
+            let pos = touch_positions
+                .remove(&up.seat_slot())
+                .unwrap_or(iced_core::Point::ORIGIN);
+            Some((
+                iced_core::Event::Touch(iced_core::touch::Event::FingerLifted {
+                    id: iced_core::touch::Finger(up.seat_slot() as u64),
+                    position: pos,
+                }),
+                mouse::Cursor::Available(pos),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// Build an iced Element row from Widget trait objects.
@@ -608,9 +298,17 @@ fn build_widget_row<'a>(
 ) -> Element<'a, WidgetMessage, Theme, IcedRenderer> {
     let children: Vec<Element<'a, WidgetMessage, Theme, IcedRenderer>> = widgets
         .iter()
-        .map(|w| {
+        .enumerate()
+        .map(|(idx, w)| {
             let portion = (w.width_fraction() * 1000.0).round() as u16;
-            container(w.render(ctx))
+            let inner = w.render(ctx);
+            // Wrap in mouse_area for generic press/release (StaticButton, TimeWidget, etc.)
+            let wrapped: Element<'a, WidgetMessage, Theme, IcedRenderer> = mouse_area(inner)
+                .on_press(WidgetMessage::WidgetPressed(idx))
+                .on_release(WidgetMessage::WidgetReleased(idx))
+                .on_exit(WidgetMessage::WidgetReleased(idx))
+                .into();
+            container(wrapped)
                 .width(Length::FillPortion(portion))
                 .height(Length::Fill)
                 .into()

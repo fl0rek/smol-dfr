@@ -134,4 +134,12 @@ impl Widget for WorkspaceWidget {
     fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
         vec![]
     }
+
+    fn window_title(&self) -> Option<String> {
+        self.manager.focused_window_title()
+    }
+
+    fn focus_workspace_if_applicable(&self, id: u64) {
+        self.manager.focus_workspace(id);
+    }
 }

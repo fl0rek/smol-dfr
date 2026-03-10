@@ -8,9 +8,8 @@ pub mod volume;
 pub mod window_title;
 pub mod workspace;
 
-use iced_core::alignment;
 use iced_core::font::Font;
-use iced_core::{Background, Border, Color, Element, Length, Theme};
+use iced_core::{Background, Border, Color, Element, Theme};
 use iced_widget::container;
 use std::os::fd::BorrowedFd;
 use std::path::Path;
@@ -42,21 +41,24 @@ pub enum WidgetAction {
     Released,
 }
 
-/// iced Message type used by the new widget rendering path.
-/// Keeps backward-compatible variants from the old Message enum during migration.
+/// iced Message type for widget interactions.
 #[derive(Debug, Clone)]
 pub enum Message {
-    // New generic widget messages
+    /// Generic widget press (index in current layer).
     WidgetPressed(usize),
+    /// Generic widget release (index in current layer).
     WidgetReleased(usize),
-    // Legacy variants kept during migration
-    ButtonDown(usize),
-    ButtonUp(usize),
+    /// Workspace indicator pressed.
     WorkspaceDown(u64),
+    /// Workspace indicator released (triggers focus).
     WorkspaceUp(u64),
+    /// Volume down zone pressed.
     VolumeDownPress,
+    /// Volume down zone released.
     VolumeDownRelease,
+    /// Volume up zone pressed.
     VolumeUpPress,
+    /// Volume up zone released.
     VolumeUpRelease,
 }
 
@@ -139,6 +141,112 @@ pub trait Widget {
     /// Attempt reconnection. Returns true on success.
     fn try_connect(&mut self) -> bool {
         true
+    }
+
+    /// Return focused window title if this widget provides one (e.g. WorkspaceWidget).
+    fn window_title(&self) -> Option<String> {
+        None
+    }
+
+    /// Focus a workspace by id, if this widget manages workspaces.
+    fn focus_workspace_if_applicable(&self, _id: u64) {}
+}
+
+/// Build a widget layer from button configs.
+pub fn build_widget_layer(
+    cfgs: &[crate::config::ButtonConfig],
+    ws_cfg: Option<&crate::config::WorkspacesConfig>,
+    vol_cfg: Option<&crate::config::VolumeConfig>,
+) -> Vec<Box<dyn Widget>> {
+    if cfgs.is_empty() {
+        panic!("Invalid configuration, layer has 0 buttons");
+    }
+
+    let specified_total: f64 = cfgs.iter().filter_map(|c| c.width).sum();
+    let unspecified_count = cfgs.iter().filter(|c| c.width.is_none()).count();
+    let remaining = (100.0 - specified_total).max(0.0);
+    let default_width = if unspecified_count > 0 {
+        remaining / unspecified_count as f64
+    } else {
+        0.0
+    };
+
+    cfgs.iter()
+        .map(|c| {
+            let frac = c.width.unwrap_or(default_width) / 100.0;
+            let color = c.color;
+            let action = c.action.clone();
+
+            let w: Box<dyn Widget> = if let Some(ref time_fmt) = c.time {
+                Box::new(time::TimeWidget::new(time_fmt, c.locale.as_deref(), frac, action, color))
+            } else if let Some(ref battery_mode) = c.battery {
+                match battery::BatteryWidget::try_new(battery_mode, action.clone(), frac, color) {
+                    Some(bw) => Box::new(bw),
+                    None => Box::new(static_button::StaticButton::new_text(
+                        "Battery N/A".to_string(), action, frac, color,
+                    )),
+                }
+            } else if c.temperature == Some(true) {
+                match temperature::TemperatureWidget::try_new(frac, color) {
+                    Some(tw) => Box::new(tw),
+                    None => Box::new(static_button::StaticButton::new_text(
+                        "Temp N/A".to_string(), vec![], frac, color,
+                    )),
+                }
+            } else if c.load_avg == Some(true) {
+                Box::new(load::LoadAvgWidget::new(frac, color))
+            } else if c.memory == Some(true) {
+                let sample_interval = c.sample_interval.unwrap_or(1000);
+                let graph_window = c.graph_window.unwrap_or(60);
+                Box::new(memory::MemoryWidget::new(sample_interval, graph_window, frac, color))
+            } else if c.workspaces == Some(true) {
+                if let Some(ws) = ws_cfg {
+                    let mut widget = workspace::WorkspaceWidget::new(ws.provider.as_deref(), ws, frac);
+                    if !widget.try_connect() {
+                        eprintln!("Warning: [Workspaces] configured but could not connect (will reconnect when available)");
+                    }
+                    Box::new(widget)
+                } else {
+                    Box::new(static_button::StaticButton::new_spacer(frac, color))
+                }
+            } else if c.window_title == Some(true) {
+                Box::new(window_title::WindowTitleWidget::new(frac, color))
+            } else if c.volume == Some(true) {
+                if let Some(vol) = vol_cfg {
+                    let mut widget = volume::VolumeWidget::new(vol.pulse_server.as_deref(), frac, color);
+                    if !widget.try_connect() {
+                        eprintln!("Warning: [Volume] configured but could not connect (will reconnect when available)");
+                    }
+                    Box::new(widget)
+                } else {
+                    Box::new(static_button::StaticButton::new_spacer(frac, color))
+                }
+            } else if let Some(ref label) = c.text {
+                Box::new(static_button::StaticButton::new_text(label.clone(), action, frac, color))
+            } else if let Some(ref icon_name) = c.icon {
+                Box::new(static_button::StaticButton::new_icon(icon_name, action, frac, color))
+            } else {
+                Box::new(static_button::StaticButton::new_spacer(frac, color))
+            };
+            w
+        })
+        .collect()
+}
+
+/// Get the window title from the workspace widget, if any.
+pub fn get_window_title(widgets: &[Box<dyn Widget>]) -> String {
+    for widget in widgets {
+        if let Some(title) = widget.window_title() {
+            return title;
+        }
+    }
+    String::new()
+}
+
+/// Focus a workspace by finding the WorkspaceWidget and calling focus_workspace.
+pub fn focus_workspace(widgets: &[Box<dyn Widget>], id: u64) {
+    for widget in widgets {
+        widget.focus_workspace_if_applicable(id);
     }
 }
 
