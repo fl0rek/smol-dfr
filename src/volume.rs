@@ -3,6 +3,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
@@ -100,7 +101,7 @@ impl VolumeManager {
             run_pa_loop(server.as_deref(), thread_state, thread_efd, tx);
         });
 
-        match rx.recv() {
+        match rx.recv_timeout(Duration::from_secs(3)) {
             Ok(true) => {
                 {
                     let mut s = self.state.lock().unwrap();

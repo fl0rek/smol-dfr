@@ -30,6 +30,7 @@ use std::{
     },
     panic::{self, AssertUnwindSafe},
     path::Path,
+    time::Instant,
 };
 use udev::MonitorBuilder;
 
@@ -877,6 +878,9 @@ fn real_main(drm: &mut DrmBackend) {
     epoll
         .add(reconnect_watcher.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 6))
         .unwrap();
+    // Cooldown for poll-based reconnection attempts (avoid busy-looping on try_connect)
+    let mut last_reconnect_attempt: Option<Instant> = None;
+    const RECONNECT_COOLDOWN_SECS: u64 = 2;
 
     uinput.set_evbit(EventKind::Key).unwrap();
     for layer in &layers {
@@ -1034,8 +1038,23 @@ fn real_main(drm: &mut DrmBackend) {
 
         _ = udev_monitor.iter().last();
 
+        // Poll managers first to pick up disconnect events from their threads
+        if let Some(ref mgr) = workspace_mgr {
+            if mgr.poll() {
+                needs_complete_redraw = true;
+            }
+        }
+        if let Some(ref mgr) = volume_mgr {
+            if mgr.poll() {
+                needs_complete_redraw = true;
+            }
+        }
+
         // Check inotify for socket appearances and dispatch reconnection
         let reconnect_events = reconnect_watcher.check_events();
+        // Restore any invalidated watches (e.g. after directory deletion/recreation)
+        reconnect_watcher.ensure_watches();
+
         if reconnect_events.niri {
             if let Some(ref mgr) = workspace_mgr {
                 if !mgr.is_connected() {
@@ -1057,14 +1076,36 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
 
-        if let Some(ref mgr) = workspace_mgr {
-            if mgr.poll() {
-                needs_complete_redraw = true;
+        // If a manager is disconnected but wasn't triggered by inotify,
+        // try reconnecting anyway (handles races where socket was recreated
+        // before we could re-add the inotify watch).
+        // Throttled to avoid busy-looping on blocking try_connect() calls.
+        let any_disconnected =
+            workspace_mgr.as_ref().map_or(false, |m| !m.is_connected())
+            || volume_mgr.as_ref().map_or(false, |m| !m.is_connected());
+        let cooldown_elapsed = last_reconnect_attempt
+            .map_or(true, |t| t.elapsed().as_secs() >= RECONNECT_COOLDOWN_SECS);
+        if any_disconnected && cooldown_elapsed {
+            last_reconnect_attempt = Some(Instant::now());
+            if !reconnect_events.niri {
+                if let Some(ref mgr) = workspace_mgr {
+                    if !mgr.is_connected() {
+                        if mgr.try_connect() {
+                            eprintln!("niri workspace: reconnected via poll fallback");
+                            needs_complete_redraw = true;
+                        }
+                    }
+                }
             }
-        }
-        if let Some(ref mgr) = volume_mgr {
-            if mgr.poll() {
-                needs_complete_redraw = true;
+            if !reconnect_events.pulse {
+                if let Some(ref mgr) = volume_mgr {
+                    if !mgr.is_connected() {
+                        if mgr.try_connect() {
+                            eprintln!("PulseAudio volume: reconnected via poll fallback");
+                            needs_complete_redraw = true;
+                        }
+                    }
+                }
             }
         }
 
