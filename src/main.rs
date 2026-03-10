@@ -111,12 +111,8 @@ impl SysfsFailureState {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BatteryState {
-    NotCharging,
-    Charging,
-    Low,
-}
+use widgets::battery::{BatteryState, find_battery_device, get_battery_state, get_battery_time_estimate};
+use widgets::temperature::{find_thermal_zone, get_temperature};
 
 enum ButtonImage {
     Text(String),
@@ -140,160 +136,12 @@ struct Button {
     color: Option<(f64, f64, f64)>,
 }
 
-fn find_battery_device() -> Option<String> {
-    let power_supply_path = "/sys/class/power_supply";
-    if let Ok(entries) = fs::read_dir(power_supply_path) {
-        for entry in entries.flatten() {
-            let dev_path = entry.path();
-            let type_path = dev_path.join("type");
-            if let Ok(typ) = fs::read_to_string(&type_path) {
-                if typ.trim() == "Battery" {
-                    if let Some(name) = dev_path.file_name().and_then(|n| n.to_str()) {
-                        return Some(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn get_battery_state(battery: &str) -> Option<(u32, BatteryState)> {
-    let status_path = format!("/sys/class/power_supply/{}/status", battery);
-    let status = fs::read_to_string(&status_path)
-        .unwrap_or_else(|_| "Unknown".to_string());
-
-    let capacity = {
-        let base = format!("/sys/class/power_supply/{}", battery);
-        let from_ratio = |num_file: &str, den_file: &str| -> Option<u32> {
-            let num = fs::read_to_string(format!("{}/{}", base, num_file))
-                .ok()?.trim().parse::<f64>().ok()?;
-            let den = fs::read_to_string(format!("{}/{}", base, den_file))
-                .ok()?.trim().parse::<f64>().ok().filter(|v| *v > 0.0)?;
-            Some(((num / den) * 100.0).round() as u32)
-        };
-        from_ratio("charge_now", "charge_full")
-            .or_else(|| from_ratio("energy_now", "energy_full"))
-            .or_else(|| {
-                fs::read_to_string(format!("{}/capacity", base))
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-            })?
-    };
-
-    let state = match status.trim() {
-        "Charging" | "Full" => BatteryState::Charging,
-        "Discharging" if capacity < 10 => BatteryState::Low,
-        _ => BatteryState::NotCharging,
-    };
-    Some((capacity, state))
-}
-
-/// Returns estimated time remaining as a formatted string (e.g. "7:51" or "1:23 to full").
-/// Returns None if estimation is not possible.
-fn get_battery_time_estimate(battery: &str, charging: bool) -> Option<String> {
-    let base = format!("/sys/class/power_supply/{}", battery);
-    let read_val = |file: &str| -> Option<f64> {
-        fs::read_to_string(format!("{}/{}", base, file))
-            .ok()?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|v| *v != 0.0)
-    };
-
-    // 1. Try direct time_to_* files (value in seconds)
-    let time_secs = if charging {
-        read_val("time_to_full_now")
-    } else {
-        read_val("time_to_empty_now")
-    };
-    if let Some(secs) = time_secs {
-        let h = (secs / 3600.0) as u32;
-        let m = ((secs % 3600.0) / 60.0) as u32;
-        return Some(format!("{}h{:02}m", h, m));
-    }
-
-    // 2. Try energy_now / power_now
-    let energy_now = read_val("energy_now");
-    let energy_full = read_val("energy_full");
-    let power_now = read_val("power_now").map(|v| v.abs());
-
-    // 3. Derive energy from charge × voltage if needed
-    let (energy_now, energy_full) = match (energy_now, energy_full) {
-        (Some(en), Some(ef)) => (Some(en), Some(ef)),
-        _ => {
-            let voltage = read_val("voltage_now")?;
-            let cn = read_val("charge_now")?;
-            let cf = read_val("charge_full")?;
-            (
-                Some(cn * voltage / 1_000_000.0),
-                Some(cf * voltage / 1_000_000.0),
-            )
-        }
-    };
-
-    // 4. Derive power from current × voltage if needed
-    let power = power_now.or_else(|| {
-        let voltage = read_val("voltage_now")?;
-        let current = read_val("current_now").map(|v| v.abs())?;
-        Some(voltage * current / 1_000_000.0)
-    });
-
-    let (en, ef, pw) = (energy_now?, energy_full?, power.filter(|v| *v > 0.0)?);
-    let hours = if charging { (ef - en) / pw } else { en / pw };
-    let h = hours as u32;
-    let m = ((hours - h as f64) * 60.0) as u32;
-    Some(format!("{}h{:02}m", h, m))
-}
-
 fn get_load_avg() -> String {
     fs::read_to_string("/proc/loadavg")
         .ok()
         .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
         .unwrap_or_else(|| "--".to_string())
 }
-
-fn find_thermal_zone() -> Option<String> {
-    let base = "/sys/class/thermal";
-    // Prefer CPU-related zones, fall back to first available
-    let mut best: Option<(String, i32)> = None;
-    if let Ok(entries) = fs::read_dir(base) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with("thermal_zone") {
-                continue;
-            }
-            let type_str = fs::read_to_string(entry.path().join("type"))
-                .unwrap_or_default()
-                .trim()
-                .to_lowercase();
-            let priority = if type_str.contains("cpu") || type_str.contains("soc") {
-                2
-            } else if type_str.contains("battery") || type_str.contains("gpu") {
-                0
-            } else {
-                1
-            };
-            if best.as_ref().map_or(true, |(_, p)| priority > *p) {
-                best = Some((name, priority));
-            }
-        }
-    }
-    best.map(|(name, _)| name)
-}
-
-fn get_temperature(zone: &str) -> String {
-    let path = format!("/sys/class/thermal/{}/temp", zone);
-    match fs::read_to_string(&path) {
-        Ok(s) => match s.trim().parse::<f64>() {
-            Ok(millideg) => format!("{:.0}°C", millideg / 1000.0),
-            Err(_) => "--".to_string(),
-        },
-        Err(_) => "--".to_string(),
-    }
-}
-
 
 fn resolve_icon_path(name: &str) -> Option<String> {
     let candidates = [

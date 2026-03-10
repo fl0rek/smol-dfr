@@ -1,4 +1,6 @@
+pub mod battery;
 pub mod static_button;
+pub mod temperature;
 pub mod time;
 
 use iced_core::alignment;
