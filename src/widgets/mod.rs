@@ -4,6 +4,9 @@ pub mod memory;
 pub mod static_button;
 pub mod temperature;
 pub mod time;
+pub mod volume;
+pub mod window_title;
+pub mod workspace;
 
 use iced_core::alignment;
 use iced_core::font::Font;
