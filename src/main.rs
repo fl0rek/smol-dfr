@@ -41,6 +41,7 @@ mod iced_renderer;
 mod memory_graph;
 mod memory_graph_widget;
 mod pixel_shift;
+mod session_detect;
 mod volume;
 mod workspace;
 
@@ -70,6 +71,7 @@ enum ButtonImage {
     Battery(String),
     Memory,
     LoadAvg,
+    Temperature(String),
     Spacer,
     Workspaces,
     WindowTitle,
@@ -197,6 +199,46 @@ fn get_load_avg() -> String {
     loadavg.split_whitespace().next().unwrap_or("0.00").to_string()
 }
 
+fn find_thermal_zone() -> Option<String> {
+    let base = "/sys/class/thermal";
+    // Prefer CPU-related zones, fall back to first available
+    let mut best: Option<(String, i32)> = None;
+    if let Ok(entries) = fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("thermal_zone") {
+                continue;
+            }
+            let type_str = fs::read_to_string(entry.path().join("type"))
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase();
+            let priority = if type_str.contains("cpu") || type_str.contains("soc") {
+                2
+            } else if type_str.contains("battery") || type_str.contains("gpu") {
+                0
+            } else {
+                1
+            };
+            if best.as_ref().map_or(true, |(_, p)| priority > *p) {
+                best = Some((name, priority));
+            }
+        }
+    }
+    best.map(|(name, _)| name)
+}
+
+fn get_temperature(zone: &str) -> String {
+    let path = format!("/sys/class/thermal/{}/temp", zone);
+    match fs::read_to_string(&path) {
+        Ok(s) => {
+            let millideg: f64 = s.trim().parse().unwrap_or(0.0);
+            format!("{:.0}°C", millideg / 1000.0)
+        }
+        Err(_) => "N/A".to_string(),
+    }
+}
+
 
 fn resolve_icon_path(name: &str) -> Option<String> {
     let candidates = [
@@ -242,6 +284,18 @@ impl Button {
                 changed: false,
                 image: ButtonImage::LoadAvg,
                 color: None,
+            }
+        } else if cfg.temperature == Some(true) {
+            if let Some(zone) = find_thermal_zone() {
+                Button {
+                    action: vec![],
+                    active: false,
+                    changed: false,
+                    image: ButtonImage::Temperature(zone),
+                    color: None,
+                }
+            } else {
+                Button::new_text("Temp N/A".to_string(), vec![])
             }
         } else if cfg.workspaces == Some(true) {
             Button {
@@ -368,6 +422,7 @@ pub struct FunctionLayer {
     displays_battery: bool,
     displays_memory: bool,
     displays_load_avg: bool,
+    displays_temperature: bool,
     /// Each entry is (width_fraction, Button) where width_fraction is 0.0–1.0
     buttons: Vec<(f64, Button)>,
     faster_refresh: bool,
@@ -385,6 +440,7 @@ impl FunctionLayer {
         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
         let displays_memory = cfg.iter().any(|cfg| cfg.memory == Some(true));
         let displays_load_avg = cfg.iter().any(|cfg| cfg.load_avg == Some(true));
+        let displays_temperature = cfg.iter().any(|cfg| cfg.temperature == Some(true));
 
         // Extract graph config from first Memory button
         let mem_btn = cfg.iter().find(|c| c.memory == Some(true));
@@ -415,6 +471,7 @@ impl FunctionLayer {
             displays_battery,
             displays_memory,
             displays_load_avg,
+            displays_temperature,
             buttons,
             faster_refresh,
             memory_sample_interval_ms,
@@ -649,6 +706,7 @@ fn build_button_defs(
                                 .to_string()
                         }
                         ButtonImage::LoadAvg => get_load_avg(),
+                        ButtonImage::Temperature(zone) => get_temperature(zone),
                         _ => unreachable!(),
                     },
                     active: b.active,
@@ -701,7 +759,41 @@ fn real_main(drm: &mut DrmBackend) {
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
 
-    // Connect to workspace provider before dropping privileges
+    // Detect graphical session user before dropping privileges
+    let session_user = session_detect::detect_graphical_session_user();
+
+    // Drop privileges to detected session user (or nobody as fallback)
+    let drop_username = match &session_user {
+        Some(u) => {
+            eprintln!("Detected graphical session user: {} (uid={})", u.username, u.uid);
+            u.username.as_str()
+        }
+        None => {
+            eprintln!("Warning: no graphical session found, falling back to nobody (niri/pulse won't work)");
+            "nobody"
+        }
+    };
+    PrivDrop::default()
+        .user(drop_username)
+        .group_list(&["input", "video"])
+        .apply()
+        .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
+
+    // Set environment variables for the target user's session
+    if let Some(ref user) = session_user {
+        let xdg_runtime = format!("/run/user/{}", user.uid);
+        std::env::set_var("XDG_RUNTIME_DIR", &xdg_runtime);
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/bus", xdg_runtime));
+
+        if let Some(niri_socket) = session_detect::discover_niri_socket(user.uid) {
+            eprintln!("Discovered NIRI_SOCKET: {}", niri_socket);
+            std::env::set_var("NIRI_SOCKET", &niri_socket);
+        } else {
+            eprintln!("Warning: could not discover NIRI_SOCKET (niri may not be running)");
+        }
+    }
+
+    // Connect to workspace provider after dropping privileges and setting env
     let workspace_mgr = cfg.workspaces.as_ref().and_then(|ws_cfg| {
         eprintln!("Workspaces config present, provider={:?}", ws_cfg.provider);
         WorkspaceManager::try_new(ws_cfg.provider.as_deref())
@@ -717,15 +809,6 @@ fn real_main(drm: &mut DrmBackend) {
     if volume_mgr.is_none() && cfg.volume.is_some() {
         eprintln!("Warning: [Volume] configured but PulseAudio not available");
     }
-
-    // drop privileges to input and video group
-    let groups = ["input", "video"];
-
-    PrivDrop::default()
-        .user("nobody")
-        .group_list(&groups)
-        .apply()
-        .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
 
     let mut iced_rndr = TouchbarRenderer::new(
         width as u32, height as u32, db_width as u32,
@@ -890,6 +973,13 @@ fn real_main(drm: &mut DrmBackend) {
         if layers[active_layer].displays_load_avg {
             for button in &mut layers[active_layer].buttons {
                 if let ButtonImage::LoadAvg = button.1.image {
+                    button.1.changed = true;
+                }
+            }
+        }
+        if layers[active_layer].displays_temperature {
+            for button in &mut layers[active_layer].buttons {
+                if let ButtonImage::Temperature(_) = button.1.image {
                     button.1.changed = true;
                 }
             }
