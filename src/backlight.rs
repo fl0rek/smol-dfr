@@ -19,12 +19,8 @@ const BRIGHTNESS_DIM_TIMEOUT: i32 = TIMEOUT_MS * 3; // should be a multiple of T
 const BRIGHTNESS_OFF_TIMEOUT: i32 = TIMEOUT_MS * 6; // should be a multiple of TIMEOUT_MS
 const DIMMED_BRIGHTNESS: u32 = 1;
 
-fn read_attr(path: &Path, attr: &str) -> u32 {
-    fs::read_to_string(path.join(attr))
-        .unwrap_or_else(|_| panic!("Failed to read {attr}"))
-        .trim()
-        .parse::<u32>()
-        .unwrap_or_else(|_| panic!("Failed to parse {attr}"))
+fn read_attr(path: &Path, attr: &str) -> Option<u32> {
+    fs::read_to_string(path.join(attr)).ok()?.trim().parse::<u32>().ok()
 }
 
 fn find_backlight() -> Result<PathBuf> {
@@ -61,32 +57,51 @@ fn find_display_backlight() -> Result<PathBuf> {
     Err(anyhow!("No Built-in Retina Display backlight device found"))
 }
 
-fn set_backlight(mut file: &File, value: u32) {
-    file.write_all(format!("{}\n", value).as_bytes()).unwrap();
-}
-
 pub struct BacklightManager {
     last_active: Instant,
     max_bl: u32,
     current_bl: u32,
     lid_state: SwitchState,
-    bl_file: File,
-    display_bl_path: PathBuf,
+    bl_file: Option<File>,
+    bl_path: Option<PathBuf>,
+    display_bl_path: Option<PathBuf>,
 }
 
 impl BacklightManager {
     pub fn new() -> BacklightManager {
-        let bl_path = find_backlight().unwrap();
-        let display_bl_path = find_display_backlight().unwrap();
-        let bl_file = OpenOptions::new()
-            .write(true)
-            .open(bl_path.join("brightness"))
-            .unwrap();
+        let (bl_path, max_bl, current_bl, bl_file) = match find_backlight() {
+            Ok(path) => {
+                let max_bl = read_attr(&path, "max_brightness").unwrap_or(0);
+                let current_bl = read_attr(&path, "brightness").unwrap_or(0);
+                let bl_file = OpenOptions::new()
+                    .write(true)
+                    .open(path.join("brightness"))
+                    .map_err(|e| {
+                        eprintln!("Warning: failed to open brightness file: {e}");
+                    })
+                    .ok();
+                (Some(path), max_bl, current_bl, bl_file)
+            }
+            Err(e) => {
+                eprintln!("Warning: {e}, brightness control disabled");
+                (None, 0, 0, None)
+            }
+        };
+
+        let display_bl_path = match find_display_backlight() {
+            Ok(path) => Some(path),
+            Err(e) => {
+                eprintln!("Warning: {e}, adaptive brightness disabled");
+                None
+            }
+        };
+
         BacklightManager {
             bl_file,
+            bl_path,
             lid_state: SwitchState::Off,
-            max_bl: read_attr(&bl_path, "max_brightness"),
-            current_bl: read_attr(&bl_path, "brightness"),
+            max_bl,
+            current_bl,
             last_active: Instant::now(),
             display_bl_path,
         }
@@ -96,6 +111,34 @@ impl BacklightManager {
         // Add one so that the touch bar does not turn off
         let adjusted = (normalized.powf(0.5) * active_brightness as f64) as u32 + 1;
         adjusted.min(MAX_TOUCH_BAR_BRIGHTNESS) // Clamp the value to the maximum allowed brightness
+    }
+    fn set_backlight(&mut self, value: u32) {
+        let Some(ref mut file) = self.bl_file else {
+            return;
+        };
+        if let Err(e) = file.write_all(format!("{}\n", value).as_bytes()) {
+            eprintln!("Warning: backlight write failed: {e}, attempting fd re-open");
+            // Try to re-open the brightness file
+            if let Some(ref bl_path) = self.bl_path {
+                match OpenOptions::new().write(true).open(bl_path.join("brightness")) {
+                    Ok(mut new_file) => {
+                        // Retry write once with new fd
+                        if let Err(e2) = new_file.write_all(format!("{}\n", value).as_bytes()) {
+                            eprintln!("Warning: backlight retry write failed: {e2}, disabling brightness control");
+                            self.bl_file = None;
+                        } else {
+                            self.bl_file = Some(new_file);
+                        }
+                    }
+                    Err(e2) => {
+                        eprintln!("Warning: backlight fd re-open failed: {e2}, disabling brightness control");
+                        self.bl_file = None;
+                    }
+                }
+            } else {
+                self.bl_file = None;
+            }
+        }
     }
     pub fn process_event(&mut self, event: &Event) {
         match event {
@@ -115,6 +158,9 @@ impl BacklightManager {
         }
     }
     pub fn update_backlight(&mut self, cfg: &Config) {
+        if self.bl_file.is_none() {
+            return;
+        }
         let since_last_active = (Instant::now() - self.last_active).as_millis() as u64;
         let new_bl = min(
             self.max_bl,
@@ -122,10 +168,13 @@ impl BacklightManager {
                 0
             } else if since_last_active < BRIGHTNESS_DIM_TIMEOUT as u64 {
                 if cfg.adaptive_brightness {
-                    BacklightManager::display_to_touchbar(
-                        read_attr(&self.display_bl_path, "brightness"),
-                        cfg.active_brightness,
-                    )
+                    // Read display brightness; fall back to fixed brightness if unavailable
+                    let display_bl = self.display_bl_path.as_ref()
+                        .and_then(|p| read_attr(p, "brightness"));
+                    match display_bl {
+                        Some(bl) => BacklightManager::display_to_touchbar(bl, cfg.active_brightness),
+                        None => cfg.active_brightness,
+                    }
                 } else {
                     cfg.active_brightness
                 }
@@ -137,7 +186,7 @@ impl BacklightManager {
         );
         if self.current_bl != new_bl {
             self.current_bl = new_bl;
-            set_backlight(&self.bl_file, self.current_bl);
+            self.set_backlight(self.current_bl);
         }
     }
     pub fn current_bl(&self) -> u32 {
