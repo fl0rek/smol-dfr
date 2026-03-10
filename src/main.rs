@@ -112,6 +112,7 @@ impl SysfsFailureState {
 }
 
 use widgets::battery::{BatteryState, find_battery_device, get_battery_state, get_battery_time_estimate};
+use widgets::load::get_load_avg;
 use widgets::temperature::{find_thermal_zone, get_temperature};
 
 enum ButtonImage {
@@ -134,13 +135,6 @@ struct Button {
     active: bool,
     action: Vec<Key>,
     color: Option<(f64, f64, f64)>,
-}
-
-fn get_load_avg() -> String {
-    fs::read_to_string("/proc/loadavg")
-        .ok()
-        .and_then(|s| s.split_whitespace().next().map(|v| v.to_string()))
-        .unwrap_or_else(|| "--".to_string())
 }
 
 fn resolve_icon_path(name: &str) -> Option<String> {
