@@ -192,7 +192,8 @@ impl Widget for BatteryWidget {
             match state {
                 Some((capacity, bat_state)) => {
                     let charging = bat_state == BatteryState::Charging;
-                    let icon = BatteryIconWidget::new(capacity, charging, ctx.blink_on);
+                    let visible = if bat_state == BatteryState::Low { ctx.blink_on } else { true };
+                    let icon = BatteryIconWidget::new(capacity, charging, visible);
                     let label_text = format!("{}%", capacity);
                     let label = text(label_text)
                         .font(ctx.font)
