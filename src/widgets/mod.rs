@@ -152,81 +152,95 @@ pub trait Widget {
     fn focus_workspace_if_applicable(&self, _id: u64) {}
 }
 
-/// Build a widget layer from button configs.
+/// Build a widget layer from widget entries.
 pub fn build_widget_layer(
-    cfgs: &[crate::config::ButtonConfig],
+    entries: &[crate::config::WidgetEntry],
     ws_cfg: Option<&crate::config::WorkspacesConfig>,
     vol_cfg: Option<&crate::config::VolumeConfig>,
 ) -> Vec<Box<dyn Widget>> {
-    if cfgs.is_empty() {
+    use crate::config::WidgetConfig;
+
+    if entries.is_empty() {
         panic!("Invalid configuration, layer has 0 buttons");
     }
 
-    let specified_total: f64 = cfgs.iter().filter_map(|c| c.width).sum();
-    let unspecified_count = cfgs.iter().filter(|c| c.width.is_none()).count();
-    let remaining = (100.0 - specified_total).max(0.0);
+    let specified_total: f64 = entries.iter().filter_map(|e| e.width).sum();
+    let unspecified_count = entries.iter().filter(|e| e.width.is_none()).count();
+    let remaining = (100.0_f64 - specified_total).max(0.0);
     let default_width = if unspecified_count > 0 {
         remaining / unspecified_count as f64
     } else {
         0.0
     };
 
-    cfgs.iter()
-        .map(|c| {
-            let frac = c.width.unwrap_or(default_width) / 100.0;
-            let color = c.color;
-            let action = c.action.clone();
+    entries.iter()
+        .map(|entry| {
+            let frac = entry.width.unwrap_or(default_width) / 100.0;
+            let color = entry.color;
+            let action = entry.action.clone();
 
-            let w: Box<dyn Widget> = if let Some(ref time_fmt) = c.time {
-                Box::new(time::TimeWidget::new(time_fmt, c.locale.as_deref(), frac, action, color))
-            } else if let Some(ref battery_mode) = c.battery {
-                match battery::BatteryWidget::try_new(battery_mode, action.clone(), frac, color) {
-                    Some(bw) => Box::new(bw),
-                    None => Box::new(static_button::StaticButton::new_text(
-                        "Battery N/A".to_string(), action, frac, color,
-                    )),
+            let w: Box<dyn Widget> = match &entry.widget {
+                WidgetConfig::Text { text } => {
+                    Box::new(static_button::StaticButton::new_text(text.clone(), action, frac, color))
                 }
-            } else if c.temperature == Some(true) {
-                match temperature::TemperatureWidget::try_new(frac, color) {
-                    Some(tw) => Box::new(tw),
-                    None => Box::new(static_button::StaticButton::new_text(
-                        "Temp N/A".to_string(), vec![], frac, color,
-                    )),
+                WidgetConfig::Icon { icon, theme: _ } => {
+                    Box::new(static_button::StaticButton::new_icon(icon, action, frac, color))
                 }
-            } else if c.load_avg == Some(true) {
-                Box::new(load::LoadAvgWidget::new(frac, color))
-            } else if c.memory == Some(true) {
-                let sample_interval = c.sample_interval.unwrap_or(1000);
-                let graph_window = c.graph_window.unwrap_or(60);
-                Box::new(memory::MemoryWidget::new(sample_interval, graph_window, frac, color))
-            } else if c.workspaces == Some(true) {
-                if let Some(ws) = ws_cfg {
-                    let mut widget = workspace::WorkspaceWidget::new(ws.provider.as_deref(), ws, frac);
-                    if !widget.try_connect() {
-                        eprintln!("Warning: [Workspaces] configured but could not connect (will reconnect when available)");
+                WidgetConfig::Time { format, locale } => {
+                    Box::new(time::TimeWidget::new(format, locale.as_deref(), frac, action, color))
+                }
+                WidgetConfig::Battery { mode } => {
+                    match battery::BatteryWidget::try_new(mode, action.clone(), frac, color) {
+                        Some(bw) => Box::new(bw),
+                        None => Box::new(static_button::StaticButton::new_text(
+                            "Battery N/A".into(), action, frac, color,
+                        )),
                     }
-                    Box::new(widget)
-                } else {
+                }
+                WidgetConfig::Temperature => {
+                    match temperature::TemperatureWidget::try_new(frac, color) {
+                        Some(tw) => Box::new(tw),
+                        None => Box::new(static_button::StaticButton::new_text(
+                            "Temp N/A".into(), vec![], frac, color,
+                        )),
+                    }
+                }
+                WidgetConfig::LoadAvg => Box::new(load::LoadAvgWidget::new(frac, color)),
+                WidgetConfig::Memory { sample_interval, graph_window } => {
+                    Box::new(memory::MemoryWidget::new(
+                        sample_interval.unwrap_or(1000),
+                        graph_window.unwrap_or(60),
+                        frac, color,
+                    ))
+                }
+                WidgetConfig::Workspaces => {
+                    if let Some(ws) = ws_cfg {
+                        let mut widget = workspace::WorkspaceWidget::new(ws.provider.as_deref(), ws, frac);
+                        if !widget.try_connect() {
+                            eprintln!("Warning: [Workspaces] configured but could not connect (will reconnect when available)");
+                        }
+                        Box::new(widget)
+                    } else {
+                        Box::new(static_button::StaticButton::new_spacer(frac, color))
+                    }
+                }
+                WidgetConfig::WindowTitle => {
+                    Box::new(window_title::WindowTitleWidget::new(frac, color))
+                }
+                WidgetConfig::Volume => {
+                    if let Some(vol) = vol_cfg {
+                        let mut widget = volume::VolumeWidget::new(vol.pulse_server.as_deref(), frac, color);
+                        if !widget.try_connect() {
+                            eprintln!("Warning: [Volume] configured but could not connect (will reconnect when available)");
+                        }
+                        Box::new(widget)
+                    } else {
+                        Box::new(static_button::StaticButton::new_spacer(frac, color))
+                    }
+                }
+                WidgetConfig::Spacer => {
                     Box::new(static_button::StaticButton::new_spacer(frac, color))
                 }
-            } else if c.window_title == Some(true) {
-                Box::new(window_title::WindowTitleWidget::new(frac, color))
-            } else if c.volume == Some(true) {
-                if let Some(vol) = vol_cfg {
-                    let mut widget = volume::VolumeWidget::new(vol.pulse_server.as_deref(), frac, color);
-                    if !widget.try_connect() {
-                        eprintln!("Warning: [Volume] configured but could not connect (will reconnect when available)");
-                    }
-                    Box::new(widget)
-                } else {
-                    Box::new(static_button::StaticButton::new_spacer(frac, color))
-                }
-            } else if let Some(ref label) = c.text {
-                Box::new(static_button::StaticButton::new_text(label.clone(), action, frac, color))
-            } else if let Some(ref icon_name) = c.icon {
-                Box::new(static_button::StaticButton::new_icon(icon_name, action, frac, color))
-            } else {
-                Box::new(static_button::StaticButton::new_spacer(frac, color))
             };
             w
         })

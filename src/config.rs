@@ -201,11 +201,54 @@ pub struct WidgetEntry {
     pub widget: WidgetConfig,
 }
 
+/// Subset proxy for parsing only global settings (no layer keys).
+/// Used as fallback when system config has old-format layer entries.
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct BaseConfigProxy {
+    media_layer_default: Option<bool>,
+    show_button_outlines: Option<bool>,
+    enable_pixel_shift: Option<bool>,
+    font_family: Option<String>,
+    font_size: Option<f64>,
+    font_style: Option<String>,
+    adaptive_brightness: Option<bool>,
+    active_brightness: Option<u32>,
+}
+
+impl BaseConfigProxy {
+    fn into_config_proxy(self) -> ConfigProxy {
+        ConfigProxy {
+            media_layer_default: self.media_layer_default,
+            show_button_outlines: self.show_button_outlines,
+            enable_pixel_shift: self.enable_pixel_shift,
+            font_family: self.font_family,
+            font_size: self.font_size,
+            font_style: self.font_style,
+            adaptive_brightness: self.adaptive_brightness,
+            active_brightness: self.active_brightness,
+            primary_layer_keys: None,
+            media_layer_keys: None,
+            workspaces: None,
+            volume: None,
+        }
+    }
+}
+
 fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
-    // System config failure is fatal -- this is an installation problem
-    let mut base =
-        toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
-            .unwrap();
+    // Parse system config -- try full ConfigProxy first, fall back to globals-only
+    // if layer keys use old format (pre-WidgetConfig boolean-flag style).
+    let sys_str = read_to_string("/usr/share/tiny-dfr/config.toml").unwrap();
+    let mut base = match toml::from_str::<ConfigProxy>(&sys_str) {
+        Ok(cfg) => cfg,
+        Err(_) => {
+            // Old-format system config: parse only global settings, ignore layer keys
+            eprintln!("Note: system config uses legacy format, layer keys from user config required");
+            toml::from_str::<BaseConfigProxy>(&sys_str)
+                .map(|b| b.into_config_proxy())
+                .map_err(|e| format!("Failed to parse system config: {e}"))?
+        }
+    };
     let user = read_to_string(user_cfg_path())
         .map_err::<Error, _>(|e| e.into())
         .and_then(|r| Ok(toml::from_str::<ConfigProxy>(&r)?));
