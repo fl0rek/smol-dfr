@@ -53,6 +53,7 @@ use display::DrmBackend;
 use iced_renderer::{BatteryInfo, ButtonAction, ButtonDef, Message as IcedMessage, TouchbarRenderer};
 use memory_graph::MemoryHistory;
 use pixel_shift::PixelShiftManager;
+use reconnect::ReconnectWatcher;
 use volume::VolumeManager;
 use workspace::WorkspaceManager;
 
@@ -868,6 +869,15 @@ fn real_main(drm: &mut DrmBackend) {
             .add(mgr.event_fd(), EpollEvent::new(EpollFlags::EPOLLIN, 5))
             .unwrap();
     }
+
+    // Create reconnect watcher for socket directories (inotify-based)
+    let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let mut reconnect_watcher = ReconnectWatcher::new(&xdg_runtime_dir);
+    epoll
+        .add(reconnect_watcher.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 6))
+        .unwrap();
+
     uinput.set_evbit(EventKind::Key).unwrap();
     for layer in &layers {
         for button in &layer.buttons {
@@ -990,9 +1000,21 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
 
+        // Check for reconnection flashes -- trigger redraw to show flash effect
+        let ws_flash = workspace_mgr.as_ref().map_or(false, |m| m.has_reconnect_flash());
+        let vol_flash = volume_mgr.as_ref().map_or(false, |m| m.has_reconnect_flash());
+        if ws_flash || vol_flash {
+            needs_complete_redraw = true;
+        }
+
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
-            let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
-            let btn_defs = build_button_defs(&layers[active_layer], ws, volume_mgr.as_ref(), memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
+            // Only pass workspace/volume managers when connected (hide widgets when disconnected)
+            let ws = workspace_mgr.as_ref()
+                .filter(|mgr| mgr.is_connected())
+                .zip(cfg.workspaces.as_ref());
+            let vol = volume_mgr.as_ref()
+                .filter(|mgr| mgr.is_connected());
+            let btn_defs = build_button_defs(&layers[active_layer], ws, vol, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
             let buffer = iced_rndr.render_to_buffer(&btn_defs);
             drm.map().unwrap().as_mut()[..buffer.len()].copy_from_slice(&buffer);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
@@ -1011,6 +1033,29 @@ fn real_main(drm: &mut DrmBackend) {
         };
 
         _ = udev_monitor.iter().last();
+
+        // Check inotify for socket appearances and dispatch reconnection
+        let reconnect_events = reconnect_watcher.check_events();
+        if reconnect_events.niri {
+            if let Some(ref mgr) = workspace_mgr {
+                if !mgr.is_connected() {
+                    if mgr.try_connect() {
+                        eprintln!("niri workspace: reconnected via inotify");
+                        needs_complete_redraw = true;
+                    }
+                }
+            }
+        }
+        if reconnect_events.pulse {
+            if let Some(ref mgr) = volume_mgr {
+                if !mgr.is_connected() {
+                    if mgr.try_connect() {
+                        eprintln!("PulseAudio volume: reconnected via inotify");
+                        needs_complete_redraw = true;
+                    }
+                }
+            }
+        }
 
         if let Some(ref mgr) = workspace_mgr {
             if mgr.poll() {
@@ -1094,8 +1139,12 @@ fn real_main(drm: &mut DrmBackend) {
                         _ => continue,
                     };
 
-                    let ws = workspace_mgr.as_ref().zip(cfg.workspaces.as_ref());
-                    let btn_defs = build_button_defs(&layers[active_layer], ws, volume_mgr.as_ref(), memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
+                    let ws = workspace_mgr.as_ref()
+                        .filter(|mgr| mgr.is_connected())
+                        .zip(cfg.workspaces.as_ref());
+                    let vol = volume_mgr.as_ref()
+                        .filter(|mgr| mgr.is_connected());
+                    let btn_defs = build_button_defs(&layers[active_layer], ws, vol, memory_history.as_ref(), blink_on, battery_show_time_until.is_some());
                     let messages = iced_rndr.process_touch(iced_event, cursor, &btn_defs);
 
                     for msg in messages {
