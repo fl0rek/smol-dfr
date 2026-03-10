@@ -23,6 +23,7 @@ mod battery_icon_widget;
 mod config;
 mod display;
 mod iced_renderer;
+mod layer_manager;
 mod memory_graph;
 mod memory_graph_widget;
 mod pixel_shift;
