@@ -111,17 +111,20 @@ impl LayerManager {
     }
 
     /// Call update() on all active widgets. Returns true if any changed.
+    /// Uses fold instead of any() to avoid short-circuiting — every widget
+    /// must get its update() called (e.g. memory sampling).
     pub fn update(&mut self) -> bool {
         self.layers[self.active_layer]
             .iter_mut()
-            .any(|w| w.update())
+            .fold(false, |changed, w| w.update() || changed)
     }
 
     /// Call poll() on all active widgets. Returns true if any changed.
+    /// Uses fold instead of any() to avoid short-circuiting.
     pub fn poll(&mut self) -> bool {
         self.layers[self.active_layer]
             .iter_mut()
-            .any(|w| w.poll())
+            .fold(false, |changed, w| w.poll() || changed)
     }
 
     /// Attempt reconnection on disconnected active widgets. Returns true if any reconnected.
