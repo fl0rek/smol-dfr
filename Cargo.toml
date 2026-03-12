@@ -10,6 +10,10 @@ repository = "https://github.com/AsahiLinux/tiny-dfr.git"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+screenshot = []
+
 [dependencies]
 drm = "0.14"
 anyhow = "1"

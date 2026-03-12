@@ -135,6 +135,18 @@ impl TouchbarRenderer {
             &[] as &[&str],
         );
 
+        #[cfg(feature = "screenshot")]
+        {
+            match pixmap.encode_png() {
+                Ok(png_data) => {
+                    if let Err(e) = std::fs::write("/tmp/smol-dfr-screenshot.png", &png_data) {
+                        eprintln!("screenshot: failed to write PNG: {e}");
+                    }
+                }
+                Err(e) => eprintln!("screenshot: failed to encode PNG: {e}"),
+            }
+        }
+
         // Rotate 90 CW: landscape pixmap (w, fb_h) -> portrait buffer (fb_h, w)
         // Uses destination-row-major iteration for cache-friendly sequential writes.
         rotate_and_convert(pixmap.data(), w as usize, vis_h as usize, fb_h as usize, w as usize)
