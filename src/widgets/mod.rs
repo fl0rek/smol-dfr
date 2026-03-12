@@ -250,8 +250,8 @@ pub(crate) fn build_widget_layer(
 /// Resolve an icon name to an SVG file path.
 pub(crate) fn resolve_icon_path(name: &str) -> Option<String> {
     let candidates = [
-        format!("/etc/tiny-dfr/{name}.svg"),
-        format!("/usr/share/tiny-dfr/{name}.svg"),
+        format!("/etc/smol-dfr/{name}.svg"),
+        format!("/usr/share/smol-dfr/{name}.svg"),
     ];
     for path in &candidates {
         if Path::new(path).exists() {

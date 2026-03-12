@@ -168,7 +168,7 @@ fn run_pa_loop(
         }
     };
 
-    let context = match Context::new(&mainloop, "tiny-dfr") {
+    let context = match Context::new(&mainloop, "smol-dfr") {
         Some(ctx) => Rc::new(RefCell::new(ctx)),
         None => {
             let _ = ready_tx.send(false);

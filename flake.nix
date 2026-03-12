@@ -1,9 +1,9 @@
 {
-  description = "The most basic dynamic function row daemon possible";
-  inputs = { nixpkgs.url = "github:nixos/nixpkgs/nixos-24.11"; };
+  description = "Small but mighty dynamic function row daemon";
+  inputs = { nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11"; };
   outputs = { self, nixpkgs }:
     let
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+      supportedSystems = [ "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor = forAllSystems (system: import nixpkgs { inherit system; });
     in rec {
@@ -11,26 +11,19 @@
         let pkgs = pkgsFor.${system};
         in {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "tiny-dfr";
-            version = "0.3.5";
+            pname = "smol-dfr";
+            version = "0.1.0";
             src = ./.;
             cargoLock = { lockFile = ./Cargo.lock; };
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = [
-              pkgs.cairo
               pkgs.libinput
-              pkgs.freetype
               pkgs.fontconfig
-              pkgs.glib
-              pkgs.pango
-              pkgs.gdk-pixbuf
-              pkgs.libxml2
-              pkgs.librsvg
               pkgs.libpulseaudio
             ];
 
             postConfigure = ''
-              substituteInPlace etc/systemd/system/tiny-dfr.service \
+              substituteInPlace etc/systemd/system/smol-dfr.service \
                   --replace-fail /usr/bin $out/bin
               substituteInPlace src/*.rs --replace-quiet /usr/share $out/share
             '';
