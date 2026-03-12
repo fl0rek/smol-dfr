@@ -60,11 +60,12 @@ impl MemoryHistory {
         }
         self.last_sample = now;
         let usage = get_memory_usage();
+        let changed = self.samples.back() != Some(&usage);
         self.samples.push_back(usage);
         if self.samples.len() > self.max_samples {
             self.samples.pop_front();
         }
-        true
+        changed
     }
 
     pub fn samples(&self) -> &VecDeque<u32> {

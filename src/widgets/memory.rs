@@ -89,6 +89,6 @@ impl Widget for MemoryWidget {
     }
 
     fn needs_faster_refresh(&self) -> bool {
-        true
+        false
     }
 }
