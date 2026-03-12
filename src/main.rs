@@ -277,7 +277,7 @@ fn real_main(drm: &mut DrmBackend) {
         }
         timeout = min(
             timeout,
-            (500 - now_i.duration_since(last_blink).as_millis() as i32).max(50),
+            (500 - now_i.duration_since(last_blink).as_millis() as i32).max(1),
         );
 
         if let Some(deadline) = battery_time_until {
