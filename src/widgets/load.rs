@@ -18,6 +18,7 @@ pub struct LoadAvgWidget {
     width_fraction: f64,
     color: Option<(f64, f64, f64)>,
     load_avg_failed: bool,
+    last_reading: String,
 }
 
 impl LoadAvgWidget {
@@ -26,6 +27,7 @@ impl LoadAvgWidget {
             width_fraction,
             color,
             load_avg_failed: false,
+            last_reading: String::new(),
         }
     }
 }
@@ -53,8 +55,8 @@ impl Widget for LoadAvgWidget {
     }
 
     fn update(&mut self) -> bool {
-        // Report load avg failure via log-once pattern
         let reading = get_load_avg();
+        // Report load avg failure via log-once pattern
         let ok = reading != "--";
         if ok && self.load_avg_failed {
             eprintln!("Load average recovered");
@@ -63,8 +65,10 @@ impl Widget for LoadAvgWidget {
             eprintln!("Warning: /proc/loadavg read failed, showing '--'");
             self.load_avg_failed = true;
         }
-        // Always return true: load may change each iteration
-        true
+        // Only trigger redraw when displayed load string changes
+        let changed = reading != self.last_reading;
+        self.last_reading = reading;
+        changed
     }
 
     fn width_fraction(&self) -> f64 {

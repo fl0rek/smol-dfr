@@ -136,6 +136,8 @@ pub struct BatteryWidget {
     active: bool,
     color: Option<(f64, f64, f64)>,
     battery_failed: bool,
+    last_capacity: Option<u32>,
+    last_state: Option<BatteryState>,
 }
 
 impl BatteryWidget {
@@ -154,6 +156,8 @@ impl BatteryWidget {
             active: false,
             color,
             battery_failed: false,
+            last_capacity: None,
+            last_state: None,
         })
     }
 }
@@ -249,8 +253,9 @@ impl Widget for BatteryWidget {
     }
 
     fn update(&mut self) -> bool {
+        let state = get_battery_state(&self.battery_device);
+        let ok = state.is_some();
         // Report battery failure via log-once pattern
-        let ok = get_battery_state(&self.battery_device).is_some();
         if ok && self.battery_failed {
             eprintln!("Battery sysfs recovered");
             self.battery_failed = false;
@@ -258,8 +263,22 @@ impl Widget for BatteryWidget {
             eprintln!("Warning: battery sysfs read failed, showing '--'");
             self.battery_failed = true;
         }
-        // Always return true: battery state may change each iteration
-        true
+        // Only trigger redraw when capacity or charge state actually changes
+        match state {
+            Some((capacity, bat_state)) => {
+                let changed =
+                    self.last_capacity != Some(capacity) || self.last_state != Some(bat_state);
+                self.last_capacity = Some(capacity);
+                self.last_state = Some(bat_state);
+                changed
+            }
+            None => {
+                let was_some = self.last_capacity.is_some();
+                self.last_capacity = None;
+                self.last_state = None;
+                was_some
+            }
+        }
     }
 
     fn width_fraction(&self) -> f64 {

@@ -52,6 +52,7 @@ pub struct TemperatureWidget {
     width_fraction: f64,
     color: Option<(f64, f64, f64)>,
     thermal_failed: bool,
+    last_reading: String,
 }
 
 impl TemperatureWidget {
@@ -63,6 +64,7 @@ impl TemperatureWidget {
             width_fraction,
             color,
             thermal_failed: false,
+            last_reading: String::new(),
         })
     }
 }
@@ -91,8 +93,8 @@ impl Widget for TemperatureWidget {
     }
 
     fn update(&mut self) -> bool {
-        // Report thermal failure via log-once pattern
         let reading = get_temperature(&self.zone);
+        // Report thermal failure via log-once pattern
         let ok = reading != "--";
         if ok && self.thermal_failed {
             eprintln!("Thermal sysfs recovered");
@@ -101,8 +103,10 @@ impl Widget for TemperatureWidget {
             eprintln!("Warning: thermal sysfs read failed, showing '--'");
             self.thermal_failed = true;
         }
-        // Always return true: temperature may change each iteration
-        true
+        // Only trigger redraw when displayed temperature string changes
+        let changed = reading != self.last_reading;
+        self.last_reading = reading;
+        changed
     }
 
     fn width_fraction(&self) -> f64 {
