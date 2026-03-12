@@ -57,19 +57,18 @@ impl Widget for VolumeWidget {
             }
         };
 
-        let make_icon =
-            |icon: &Option<String>| -> Element<'_, Message, Theme, IcedRenderer> {
-                if let Some(path) = icon {
-                    let handle = svg::Handle::from_path(path);
-                    svg::Svg::new(handle)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .content_fit(ContentFit::Contain)
-                        .into()
-                } else {
-                    text("").width(Length::Fill).height(Length::Fill).into()
-                }
-            };
+        let make_icon = |icon: &Option<String>| -> Element<'_, Message, Theme, IcedRenderer> {
+            if let Some(path) = icon {
+                let handle = svg::Handle::from_path(path);
+                svg::Svg::new(handle)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .content_fit(ContentFit::Contain)
+                    .into()
+            } else {
+                text("").width(Length::Fill).height(Length::Fill).into()
+            }
+        };
 
         let left: Element<'_, Message, Theme, IcedRenderer> = container(
             mouse_area(make_icon(&self.down_icon))

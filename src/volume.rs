@@ -48,11 +48,7 @@ fn signal_fd(fd: i32) {
 fn drain_eventfd(fd: &OwnedFd) {
     let mut val: u64 = 0;
     unsafe {
-        libc::read(
-            fd.as_raw_fd(),
-            &mut val as *mut u64 as *mut libc::c_void,
-            8,
-        );
+        libc::read(fd.as_raw_fd(), &mut val as *mut u64 as *mut libc::c_void, 8);
     }
 }
 
@@ -205,14 +201,14 @@ fn run_pa_loop(
     {
         let ctx = Rc::clone(&context);
         let st = Arc::clone(&state);
-        context.borrow_mut().set_subscribe_callback(Some(Box::new(
-            move |facility, _op, _idx| match facility {
+        context
+            .borrow_mut()
+            .set_subscribe_callback(Some(Box::new(move |facility, _op, _idx| match facility {
                 Some(Facility::Sink) | Some(Facility::Server) => {
                     query_volume(&ctx, &st, efd_raw);
                 }
                 _ => {}
-            },
-        )));
+            })));
     }
 
     context
@@ -260,8 +256,7 @@ fn query_volume(context: &Rc<RefCell<Context>>, state: &Arc<Mutex<SharedState>>,
                 .introspect()
                 .get_sink_info_by_name(&name, move |result| {
                     if let ListResult::Item(sink_info) = result {
-                        let vol_pct = (sink_info.volume.avg().0 as f64
-                            / Volume::NORMAL.0 as f64
+                        let vol_pct = (sink_info.volume.avg().0 as f64 / Volume::NORMAL.0 as f64
                             * 100.0)
                             .round() as u32;
                         let mut s = st.lock().unwrap();

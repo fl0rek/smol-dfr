@@ -36,16 +36,22 @@ pub(crate) fn find_battery_device() -> Option<String> {
 
 pub(crate) fn get_battery_state(battery: &str) -> Option<(u32, BatteryState)> {
     let status_path = format!("/sys/class/power_supply/{}/status", battery);
-    let status = fs::read_to_string(&status_path)
-        .unwrap_or_else(|_| "Unknown".to_string());
+    let status = fs::read_to_string(&status_path).unwrap_or_else(|_| "Unknown".to_string());
 
     let capacity = {
         let base = format!("/sys/class/power_supply/{}", battery);
         let from_ratio = |num_file: &str, den_file: &str| -> Option<u32> {
             let num = fs::read_to_string(format!("{}/{}", base, num_file))
-                .ok()?.trim().parse::<f64>().ok()?;
+                .ok()?
+                .trim()
+                .parse::<f64>()
+                .ok()?;
             let den = fs::read_to_string(format!("{}/{}", base, den_file))
-                .ok()?.trim().parse::<f64>().ok().filter(|v| *v > 0.0)?;
+                .ok()?
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| *v > 0.0)?;
             Some(((num / den) * 100.0).round() as u32)
         };
         from_ratio("charge_now", "charge_full")
@@ -192,7 +198,11 @@ impl Widget for BatteryWidget {
             match state {
                 Some((capacity, bat_state)) => {
                     let charging = bat_state == BatteryState::Charging;
-                    let visible = if bat_state == BatteryState::Low { ctx.blink_on } else { true };
+                    let visible = if bat_state == BatteryState::Low {
+                        ctx.blink_on
+                    } else {
+                        true
+                    };
                     let icon = BatteryIconWidget::new(capacity, charging, visible);
                     let label_text = format!("{}%", capacity);
                     let label = text(label_text)

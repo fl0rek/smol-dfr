@@ -1,19 +1,17 @@
 use iced_core::clipboard;
+use iced_core::font::{Family, Stretch, Style, Weight};
 use iced_core::layout::{Layout, Limits};
 use iced_core::mouse;
 use iced_core::renderer;
 use iced_core::widget::Tree;
+use iced_core::Length;
 use iced_core::Renderer as _;
-use iced_core::font::{Family, Stretch, Style, Weight};
-use iced_core::{
-    Color, Element, Font, Pixels, Rectangle, Shell, Size, Theme,
-};
+use iced_core::{Color, Element, Font, Pixels, Rectangle, Shell, Size, Theme};
 use iced_graphics::Viewport;
 use iced_widget::{container, mouse_area, row};
-use iced_core::Length;
 use tiny_skia::Pixmap;
 
-use crate::widgets::{RenderContext, Widget, Message as WidgetMessage};
+use crate::widgets::{Message as WidgetMessage, RenderContext, Widget};
 
 type IcedRenderer = iced_tiny_skia::Renderer;
 
@@ -48,8 +46,16 @@ impl TouchbarRenderer {
         };
         let font = Font {
             family,
-            weight: if font_bold { Weight::Bold } else { Weight::Normal },
-            style: if font_italic { Style::Italic } else { Style::Normal },
+            weight: if font_bold {
+                Weight::Bold
+            } else {
+                Weight::Normal
+            },
+            style: if font_italic {
+                Style::Italic
+            } else {
+                Style::Normal
+            },
             stretch: Stretch::Normal,
         };
         let renderer = IcedRenderer::new(font, Pixels(font_size));
@@ -121,8 +127,7 @@ impl TouchbarRenderer {
 
         // Flush to pixmap
         let mut pixmap = Pixmap::new(w, fb_h).expect("Failed to create pixmap");
-        let mut clip_mask =
-            tiny_skia::Mask::new(w, fb_h).expect("Failed to create clip mask");
+        let mut clip_mask = tiny_skia::Mask::new(w, fb_h).expect("Failed to create clip mask");
         let viewport = Viewport::with_physical_size(Size::new(w, fb_h), 1.0);
         let damage = [viewport_rect];
 
@@ -149,15 +154,17 @@ impl TouchbarRenderer {
 
         // Rotate 90 CW: landscape pixmap (w, fb_h) -> portrait buffer (fb_h, w)
         // Uses destination-row-major iteration for cache-friendly sequential writes.
-        rotate_and_convert(pixmap.data(), w as usize, vis_h as usize, fb_h as usize, w as usize)
+        rotate_and_convert(
+            pixmap.data(),
+            w as usize,
+            vis_h as usize,
+            fb_h as usize,
+            w as usize,
+        )
     }
 
     /// Render a list of Widget trait objects to a rotated XRGB8888 buffer.
-    pub fn render_widgets(
-        &mut self,
-        widgets: &[Box<dyn Widget>],
-        ctx: &RenderContext,
-    ) -> Vec<u8> {
+    pub fn render_widgets(&mut self, widgets: &[Box<dyn Widget>], ctx: &RenderContext) -> Vec<u8> {
         self.renderer.clear();
 
         let element = build_widget_row(widgets, ctx);
@@ -186,7 +193,9 @@ impl TouchbarRenderer {
         let vis_h = self.visible_height;
 
         let limits = Limits::new(Size::ZERO, Size::new(w as f32, vis_h as f32));
-        let node = element.as_widget().layout(&mut tree, &self.renderer, &limits);
+        let node = element
+            .as_widget()
+            .layout(&mut tree, &self.renderer, &limits);
         let layout = Layout::new(&node);
 
         let mut messages = Vec::new();
@@ -390,9 +399,24 @@ mod tests {
     fn test_4x3_rotation_layout() {
         // Source: 4 wide x 3 tall, each pixel unique for tracking
         // Pixel values are fully opaque (a=255) so RGB passes through
-        let row0: &[[u8; 4]] = &[px(10,20,30,255), px(11,21,31,255), px(12,22,32,255), px(13,23,33,255)];
-        let row1: &[[u8; 4]] = &[px(40,50,60,255), px(41,51,61,255), px(42,52,62,255), px(43,53,63,255)];
-        let row2: &[[u8; 4]] = &[px(70,80,90,255), px(71,81,91,255), px(72,82,92,255), px(73,83,93,255)];
+        let row0: &[[u8; 4]] = &[
+            px(10, 20, 30, 255),
+            px(11, 21, 31, 255),
+            px(12, 22, 32, 255),
+            px(13, 23, 33, 255),
+        ];
+        let row1: &[[u8; 4]] = &[
+            px(40, 50, 60, 255),
+            px(41, 51, 61, 255),
+            px(42, 52, 62, 255),
+            px(43, 53, 63, 255),
+        ];
+        let row2: &[[u8; 4]] = &[
+            px(70, 80, 90, 255),
+            px(71, 81, 91, 255),
+            px(72, 82, 92, 255),
+            px(73, 83, 93, 255),
+        ];
         let src = build_src(&[row0, row1, row2]);
 
         let src_w = 4;
@@ -477,8 +501,8 @@ mod tests {
     #[test]
     fn test_output_dimensions_transposed() {
         // 5 wide x 2 tall -> dst should be (2 wide x 5 tall)
-        let row0: &[[u8; 4]] = &[px(0,0,0,255); 5];
-        let row1: &[[u8; 4]] = &[px(0,0,0,255); 5];
+        let row0: &[[u8; 4]] = &[px(0, 0, 0, 255); 5];
+        let row1: &[[u8; 4]] = &[px(0, 0, 0, 255); 5];
         let src = build_src(&[row0, row1]);
 
         let dst_w = 2;

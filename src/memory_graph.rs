@@ -7,11 +7,21 @@ pub fn get_memory_usage() -> u32 {
     let mut available = 0u64;
     for line in meminfo.lines() {
         if let Some(val) = line.strip_prefix("MemTotal:") {
-            total = val.trim().strip_suffix(" kB").unwrap_or(val.trim())
-                .trim().parse().unwrap_or(0);
+            total = val
+                .trim()
+                .strip_suffix(" kB")
+                .unwrap_or(val.trim())
+                .trim()
+                .parse()
+                .unwrap_or(0);
         } else if let Some(val) = line.strip_prefix("MemAvailable:") {
-            available = val.trim().strip_suffix(" kB").unwrap_or(val.trim())
-                .trim().parse().unwrap_or(0);
+            available = val
+                .trim()
+                .strip_suffix(" kB")
+                .unwrap_or(val.trim())
+                .trim()
+                .parse()
+                .unwrap_or(0);
         }
     }
     if total == 0 {

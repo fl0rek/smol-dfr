@@ -2,7 +2,9 @@ use iced_core::alignment;
 use iced_core::{Color, Element, Length, Theme};
 use iced_widget::{container, text};
 
-use super::{button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction};
+use super::{
+    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
+};
 
 pub struct WindowTitleWidget {
     width_fraction: f64,

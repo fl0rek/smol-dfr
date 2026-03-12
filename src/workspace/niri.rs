@@ -1,6 +1,6 @@
 use super::{WorkspaceBackend, WorkspaceInfo};
-use niri_ipc::{Action, Event, Request, Response, WorkspaceReferenceArg};
 use niri_ipc::socket::Socket;
+use niri_ipc::{Action, Event, Request, Response, WorkspaceReferenceArg};
 use std::collections::HashMap;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
@@ -31,11 +31,7 @@ fn create_eventfd() -> OwnedFd {
 fn signal_eventfd(fd: &OwnedFd) {
     let val: u64 = 1;
     unsafe {
-        libc::write(
-            fd.as_raw_fd(),
-            &val as *const u64 as *const libc::c_void,
-            8,
-        );
+        libc::write(fd.as_raw_fd(), &val as *const u64 as *const libc::c_void, 8);
     }
 }
 
@@ -49,11 +45,7 @@ fn signal_eventfd_raw(fd: i32) {
 fn drain_eventfd(fd: &OwnedFd) {
     let mut val: u64 = 0;
     unsafe {
-        libc::read(
-            fd.as_raw_fd(),
-            &mut val as *mut u64 as *mut libc::c_void,
-            8,
-        );
+        libc::read(fd.as_raw_fd(), &mut val as *mut u64 as *mut libc::c_void, 8);
     }
 }
 
@@ -147,8 +139,7 @@ impl NiriBackend {
         }
 
         // Dup eventfd for the new thread
-        let thread_event_fd =
-            unsafe { OwnedFd::from_raw_fd(libc::dup(self.event_fd.as_raw_fd())) };
+        let thread_event_fd = unsafe { OwnedFd::from_raw_fd(libc::dup(self.event_fd.as_raw_fd())) };
 
         // Mark connected, set flash, signal
         {
@@ -171,11 +162,7 @@ impl NiriBackend {
         true
     }
 
-    fn event_reader(
-        socket: Socket,
-        state: Arc<Mutex<SharedState>>,
-        event_fd: OwnedFd,
-    ) {
+    fn event_reader(socket: Socket, state: Arc<Mutex<SharedState>>, event_fd: OwnedFd) {
         let mut read_event = socket.read_events();
         loop {
             match read_event() {
@@ -197,11 +184,7 @@ impl NiriBackend {
         }
     }
 
-    fn handle_event(
-        event: &Event,
-        state: &Arc<Mutex<SharedState>>,
-        event_fd: &OwnedFd,
-    ) {
+    fn handle_event(event: &Event, state: &Arc<Mutex<SharedState>>, event_fd: &OwnedFd) {
         let mut s = state.lock().unwrap();
         let changed = match event {
             Event::WorkspacesChanged { workspaces } => {

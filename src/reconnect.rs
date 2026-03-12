@@ -23,11 +23,9 @@ pub struct ReconnectWatcher {
     pulse_dir: String,
 }
 
-const WATCH_FLAGS: AddWatchFlags =
-    AddWatchFlags::IN_CREATE.union(AddWatchFlags::IN_MOVED_TO);
+const WATCH_FLAGS: AddWatchFlags = AddWatchFlags::IN_CREATE.union(AddWatchFlags::IN_MOVED_TO);
 
-const DIR_WATCH_FLAGS: AddWatchFlags =
-    AddWatchFlags::IN_CREATE.union(AddWatchFlags::IN_ISDIR);
+const DIR_WATCH_FLAGS: AddWatchFlags = AddWatchFlags::IN_CREATE.union(AddWatchFlags::IN_ISDIR);
 
 impl ReconnectWatcher {
     /// Create a new watcher for niri and PulseAudio socket directories.
@@ -39,9 +37,8 @@ impl ReconnectWatcher {
     /// Handles missing directories gracefully (ENOENT) by deferring watch
     /// setup until the directory appears.
     pub fn new(xdg_runtime_dir: &str) -> Self {
-        let inotify =
-            Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)
-                .expect("Failed to create inotify instance");
+        let inotify = Inotify::init(InitFlags::IN_NONBLOCK | InitFlags::IN_CLOEXEC)
+            .expect("Failed to create inotify instance");
 
         let niri_dir = xdg_runtime_dir.to_string();
         let pulse_dir = format!("{}/pulse", xdg_runtime_dir);
@@ -119,8 +116,7 @@ impl ReconnectWatcher {
             } else if Some(event.wd) == self.parent_wd {
                 if *name == *"pulse" {
                     // The pulse directory was just created; add a watch on it
-                    self.pulse_wd =
-                        add_watch_safe(&self.inotify, &self.pulse_dir, WATCH_FLAGS);
+                    self.pulse_wd = add_watch_safe(&self.inotify, &self.pulse_dir, WATCH_FLAGS);
                     // Remove parent watch -- no longer needed
                     if let Some(wd) = self.parent_wd.take() {
                         let _ = self.inotify.rm_watch(wd);
@@ -144,8 +140,7 @@ impl ReconnectWatcher {
             self.niri_wd = add_watch_safe(&self.inotify, &self.niri_dir, WATCH_FLAGS);
         }
         if self.pulse_wd.is_none() {
-            self.pulse_wd =
-                add_watch_safe(&self.inotify, &self.pulse_dir, WATCH_FLAGS);
+            self.pulse_wd = add_watch_safe(&self.inotify, &self.pulse_dir, WATCH_FLAGS);
             // If we got pulse_wd now, remove the parent watch
             if self.pulse_wd.is_some() {
                 if let Some(wd) = self.parent_wd.take() {
@@ -153,11 +148,7 @@ impl ReconnectWatcher {
                 }
             } else if self.parent_wd.is_none() {
                 // Still no pulse dir; re-watch parent
-                self.parent_wd = add_watch_safe(
-                    &self.inotify,
-                    &self.niri_dir,
-                    DIR_WATCH_FLAGS,
-                );
+                self.parent_wd = add_watch_safe(&self.inotify, &self.niri_dir, DIR_WATCH_FLAGS);
             }
         }
     }
@@ -165,11 +156,7 @@ impl ReconnectWatcher {
 
 /// Try to add an inotify watch, returning None on ENOENT (directory doesn't
 /// exist yet) instead of panicking.
-fn add_watch_safe(
-    inotify: &Inotify,
-    path: &str,
-    flags: AddWatchFlags,
-) -> Option<WatchDescriptor> {
+fn add_watch_safe(inotify: &Inotify, path: &str, flags: AddWatchFlags) -> Option<WatchDescriptor> {
     if !Path::new(path).exists() {
         return None;
     }

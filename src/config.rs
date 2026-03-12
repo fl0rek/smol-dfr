@@ -40,10 +40,12 @@ impl From<WorkspacesConfigProxy> for WorkspacesConfig {
     fn from(p: WorkspacesConfigProxy) -> Self {
         Self {
             provider: p.provider,
-            active_color: p.active_color
+            active_color: p
+                .active_color
                 .and_then(|c| parse_color_str(&c))
                 .unwrap_or((0.149, 0.545, 0.824)), // solarized blue
-            urgent_color: p.urgent_color
+            urgent_color: p
+                .urgent_color
                 .and_then(|c| parse_color_str(&c))
                 .unwrap_or((0.863, 0.196, 0.184)), // solarized red
         }
@@ -147,7 +149,9 @@ where
         Some(s) => {
             let hex = s.strip_prefix('#').unwrap_or(&s);
             if hex.len() != 6 {
-                return Err(de::Error::custom("Color must be 6 hex digits, e.g. \"FF8800\""));
+                return Err(de::Error::custom(
+                    "Color must be 6 hex digits, e.g. \"FF8800\"",
+                ));
             }
             let r = u8::from_str_radix(&hex[0..2], 16).map_err(de::Error::custom)?;
             let g = u8::from_str_radix(&hex[2..4], 16).map_err(de::Error::custom)?;
@@ -161,7 +165,9 @@ where
 #[serde(tag = "Type", rename_all = "snake_case")]
 pub enum WidgetConfig {
     #[serde(rename_all = "PascalCase")]
-    Text { text: String },
+    Text {
+        text: String,
+    },
     #[serde(rename_all = "PascalCase")]
     Icon {
         icon: String,
@@ -173,7 +179,9 @@ pub enum WidgetConfig {
         locale: Option<String>,
     },
     #[serde(rename_all = "PascalCase")]
-    Battery { mode: String },
+    Battery {
+        mode: String,
+    },
     Temperature,
     #[serde(rename = "load_avg")]
     LoadAvg,
@@ -243,7 +251,9 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         Ok(cfg) => cfg,
         Err(_) => {
             // Old-format system config: parse only global settings, ignore layer keys
-            eprintln!("Note: system config uses legacy format, layer keys from user config required");
+            eprintln!(
+                "Note: system config uses legacy format, layer keys from user config required"
+            );
             toml::from_str::<BaseConfigProxy>(&sys_str)
                 .map(|b| b.into_config_proxy())
                 .map_err(|e| format!("Failed to parse system config: {e}"))?
@@ -272,9 +282,11 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         base.workspaces = user.workspaces.or(base.workspaces);
         base.volume = user.volume.or(base.volume);
     };
-    let mut media_layer_keys = base.media_layer_keys
+    let mut media_layer_keys = base
+        .media_layer_keys
         .ok_or("missing MediaLayerKeys in config")?;
-    let mut primary_layer_keys = base.primary_layer_keys
+    let mut primary_layer_keys = base
+        .primary_layer_keys
         .ok_or("missing PrimaryLayerKeys in config")?;
     if width >= 2170 {
         for layer in [&mut media_layer_keys, &mut primary_layer_keys] {
@@ -289,7 +301,8 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
             );
         }
     }
-    let media_layer_default = base.media_layer_default
+    let media_layer_default = base
+        .media_layer_default
         .ok_or("missing MediaLayerDefault in config")?;
     let button_layers = if media_layer_default {
         [media_layer_keys, primary_layer_keys]
@@ -297,19 +310,31 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         [primary_layer_keys, media_layer_keys]
     };
     let font_style = base.font_style.as_deref().unwrap_or("");
-    let font_bold = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("bold"));
-    let font_italic = font_style.split_whitespace().any(|w| w.eq_ignore_ascii_case("italic"));
+    let font_bold = font_style
+        .split_whitespace()
+        .any(|w| w.eq_ignore_ascii_case("bold"));
+    let font_italic = font_style
+        .split_whitespace()
+        .any(|w| w.eq_ignore_ascii_case("italic"));
     // Default bold to true if no FontStyle was specified (matches the ":bold" default FontTemplate)
-    let font_bold = if base.font_style.is_none() { true } else { font_bold };
+    let font_bold = if base.font_style.is_none() {
+        true
+    } else {
+        font_bold
+    };
 
     let cfg = Config {
-        show_button_outlines: base.show_button_outlines
+        show_button_outlines: base
+            .show_button_outlines
             .ok_or("missing ShowButtonOutlines in config")?,
-        enable_pixel_shift: base.enable_pixel_shift
+        enable_pixel_shift: base
+            .enable_pixel_shift
             .ok_or("missing EnablePixelShift in config")?,
-        adaptive_brightness: base.adaptive_brightness
+        adaptive_brightness: base
+            .adaptive_brightness
             .ok_or("missing AdaptiveBrightness in config")?,
-        active_brightness: base.active_brightness
+        active_brightness: base
+            .active_brightness
             .ok_or("missing ActiveBrightness in config")?,
         font_family: base.font_family.unwrap_or_default(),
         font_size: base.font_size.unwrap_or(20.0) as f32,
@@ -368,7 +393,13 @@ impl ConfigManager {
         }
     }
     #[cold]
-    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [Vec<WidgetEntry>; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
+    fn handle_events(
+        &mut self,
+        cfg: &mut Config,
+        layers: &mut [Vec<WidgetEntry>; 2],
+        width: u16,
+        evts: Result<Vec<InotifyEvent>, Errno>,
+    ) -> bool {
         let mut ret = false;
         for evt in evts.unwrap_or_default() {
             if Some(evt.wd) != self.watch_desc {

@@ -5,7 +5,9 @@ use iced_widget::{container, mouse_area, row, text};
 use crate::config::WorkspacesConfig;
 use crate::workspace::WorkspaceManager;
 
-use super::{button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction};
+use super::{
+    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
+};
 use std::os::fd::BorrowedFd;
 
 pub struct WorkspaceWidget {

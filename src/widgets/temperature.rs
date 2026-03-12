@@ -56,10 +56,7 @@ pub struct TemperatureWidget {
 
 impl TemperatureWidget {
     /// Create a new TemperatureWidget. Returns None if no thermal zone is found.
-    pub fn try_new(
-        width_fraction: f64,
-        color: Option<(f64, f64, f64)>,
-    ) -> Option<Self> {
+    pub fn try_new(width_fraction: f64, color: Option<(f64, f64, f64)>) -> Option<Self> {
         let zone = find_thermal_zone()?;
         Some(Self {
             zone,

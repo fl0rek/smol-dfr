@@ -20,7 +20,11 @@ const BRIGHTNESS_OFF_TIMEOUT: i32 = TIMEOUT_MS * 6; // should be a multiple of T
 const DIMMED_BRIGHTNESS: u32 = 1;
 
 fn read_attr(path: &Path, attr: &str) -> Option<u32> {
-    fs::read_to_string(path.join(attr)).ok()?.trim().parse::<u32>().ok()
+    fs::read_to_string(path.join(attr))
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
 }
 
 fn find_backlight() -> Result<PathBuf> {
@@ -122,7 +126,10 @@ impl BacklightManager {
             eprintln!("Warning: backlight write failed: {e}, attempting fd re-open");
             // Try to re-open the brightness file
             if let Some(ref bl_path) = self.bl_path {
-                match OpenOptions::new().write(true).open(bl_path.join("brightness")) {
+                match OpenOptions::new()
+                    .write(true)
+                    .open(bl_path.join("brightness"))
+                {
                     Ok(mut new_file) => {
                         // Retry write once with new fd
                         if let Err(e2) = new_file.write_all(format!("{}\n", value).as_bytes()) {
@@ -178,10 +185,14 @@ impl BacklightManager {
             } else if since_last_active < BRIGHTNESS_DIM_TIMEOUT as u64 {
                 if cfg.adaptive_brightness {
                     // Read display brightness; fall back to fixed brightness if unavailable
-                    let display_bl = self.display_bl_path.as_ref()
+                    let display_bl = self
+                        .display_bl_path
+                        .as_ref()
                         .and_then(|p| read_attr(p, "brightness"));
                     match display_bl {
-                        Some(bl) => BacklightManager::display_to_touchbar(bl, cfg.active_brightness),
+                        Some(bl) => {
+                            BacklightManager::display_to_touchbar(bl, cfg.active_brightness)
+                        }
                         None => cfg.active_brightness,
                     }
                 } else {

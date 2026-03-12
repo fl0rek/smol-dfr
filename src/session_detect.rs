@@ -130,20 +130,14 @@ mod tests {
     fn test_parse_session_properties_tty() {
         let output = "Type=tty\nName=user\nUser=1000\n";
         let result = parse_session_properties(output);
-        assert_eq!(
-            result,
-            Some(("tty".to_string(), "user".to_string(), 1000))
-        );
+        assert_eq!(result, Some(("tty".to_string(), "user".to_string(), 1000)));
     }
 
     #[test]
     fn test_parse_session_properties_x11() {
         let output = "Name=john\nType=x11\nUser=1001\n";
         let result = parse_session_properties(output);
-        assert_eq!(
-            result,
-            Some(("x11".to_string(), "john".to_string(), 1001))
-        );
+        assert_eq!(result, Some(("x11".to_string(), "john".to_string(), 1001)));
     }
 
     #[test]
