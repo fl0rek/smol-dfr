@@ -273,7 +273,9 @@ fn real_main(drm: &mut DrmBackend) {
         if now_i.duration_since(last_blink).as_millis() >= 500 {
             blink_on = !blink_on;
             last_blink = now_i;
-            needs_redraw = true;
+            if layer_mgr.needs_blink() {
+                needs_redraw = true;
+            }
         }
         timeout = min(
             timeout,

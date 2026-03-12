@@ -145,6 +145,13 @@ impl LayerManager {
             .any(|w| !w.is_connected())
     }
 
+    /// Whether any active widget needs blink redraws.
+    pub fn needs_blink(&self) -> bool {
+        self.layers[self.active_layer]
+            .iter()
+            .any(|w| w.needs_blink())
+    }
+
     /// Whether any active widget needs faster refresh (seconds-level).
     pub fn needs_faster_refresh(&self) -> bool {
         self.layers[self.active_layer]
