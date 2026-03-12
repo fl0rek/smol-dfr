@@ -252,6 +252,10 @@ impl Widget for BatteryWidget {
         }
     }
 
+    fn needs_blink(&self) -> bool {
+        self.last_state == Some(BatteryState::Low)
+    }
+
     fn update(&mut self) -> bool {
         let state = get_battery_state(&self.battery_device);
         let ok = state.is_some();

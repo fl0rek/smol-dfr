@@ -128,6 +128,11 @@ pub trait Widget {
     /// Handle high-level touch action. Returns actions for the main loop.
     fn handle_event(&mut self, action: WidgetAction) -> Vec<MainLoopAction>;
 
+    /// Whether this widget currently needs blink redraws (e.g., low battery blinking).
+    fn needs_blink(&self) -> bool {
+        false
+    }
+
     /// Whether this widget needs faster refresh (e.g., seconds display).
     fn needs_faster_refresh(&self) -> bool {
         false
