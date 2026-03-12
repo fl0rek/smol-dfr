@@ -1,6 +1,8 @@
 # smol-dfr
 Small but mighty dynamic function row daemon
 
+![smol-dfr screenshot](smol-dfr-screenshot.png)
+
 ## License
 
 This project is a fork of [tiny-dfr](https://github.com/AsahiLinux/tiny-dfr) by The Asahi Linux Contributors.
