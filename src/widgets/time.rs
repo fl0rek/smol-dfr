@@ -4,7 +4,7 @@ use chrono::{
 };
 use iced_core::alignment;
 use iced_core::{Color, Element, Length, Theme};
-use iced_widget::{container, mouse_area, text};
+use iced_widget::{container, text};
 
 use super::{button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction};
 
