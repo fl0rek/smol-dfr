@@ -119,12 +119,21 @@ impl LayerManager {
             .fold(false, |changed, w| w.update() || changed)
     }
 
-    /// Call poll() on all active widgets. Returns true if any changed.
-    /// Uses fold instead of any() to avoid short-circuiting.
+    /// Call poll() on ALL layers' widgets to drain their fds, but only report
+    /// changes from the active layer. Without draining inactive layer fds,
+    /// epoll returns immediately every iteration (busy-spinning the main loop).
     pub fn poll(&mut self) -> bool {
-        self.layers[self.active_layer]
-            .iter_mut()
-            .fold(false, |changed, w| w.poll() || changed)
+        let active = self.active_layer;
+        let mut active_changed = false;
+        for (li, layer) in self.layers.iter_mut().enumerate() {
+            for w in layer.iter_mut() {
+                let changed = w.poll();
+                if li == active && changed {
+                    active_changed = true;
+                }
+            }
+        }
+        active_changed
     }
 
     /// Attempt reconnection on disconnected active widgets. Returns true if any reconnected.

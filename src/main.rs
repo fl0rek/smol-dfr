@@ -227,11 +227,6 @@ fn real_main(drm: &mut DrmBackend) {
     let mut battery_time_until: Option<Instant> = None;
     let mut digitizer: Option<InputDevice> = None;
     let mut touch_positions: HashMap<u32, iced_core::Point> = HashMap::new();
-    let mut last_redraw_ts = if layer_mgr.needs_faster_refresh() {
-        Local::now().second()
-    } else {
-        Local::now().minute()
-    };
 
     loop {
         if layer_mgr.check_config_reload(&epoll) {
@@ -258,15 +253,10 @@ fn real_main(drm: &mut DrmBackend) {
             }
             timeout = min(timeout, ps_t);
         }
-        let faster = layer_mgr.needs_faster_refresh();
-        let ts = if faster {
-            Local::now().second()
-        } else {
-            Local::now().minute()
-        };
-        if ts != last_redraw_ts {
-            needs_redraw = true;
-            last_redraw_ts = ts;
+        // Shorten timeout for widgets that need faster refresh (e.g. time with seconds).
+        // The actual redraw decision comes from widget update() returning true.
+        if layer_mgr.needs_faster_refresh() {
+            timeout = min(timeout, 1000);
         }
 
         let now_i = Instant::now();

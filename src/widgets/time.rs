@@ -18,6 +18,7 @@ pub struct TimeWidget {
     active: bool,
     color: Option<(f64, f64, f64)>,
     faster_refresh: bool,
+    last_formatted: String,
 }
 
 impl TimeWidget {
@@ -64,15 +65,14 @@ impl TimeWidget {
             active: false,
             color,
             faster_refresh,
+            last_formatted: String::new(),
         }
     }
 }
 
 impl Widget for TimeWidget {
     fn render(&self, ctx: &RenderContext) -> Element<'_, Message, Theme, IcedRenderer> {
-        let label = Local::now()
-            .format_localized_with_items(self.format_items.iter(), self.locale)
-            .to_string();
+        let label = &self.last_formatted;
 
         let style_color = self.color;
         let style_active = self.active;
@@ -105,8 +105,15 @@ impl Widget for TimeWidget {
     }
 
     fn update(&mut self) -> bool {
-        // Time always needs redraw; the main loop controls timing.
-        false
+        let now = Local::now()
+            .format_localized_with_items(self.format_items.iter(), self.locale)
+            .to_string();
+        if now != self.last_formatted {
+            self.last_formatted = now;
+            true
+        } else {
+            false
+        }
     }
 
     fn width_fraction(&self) -> f64 {
