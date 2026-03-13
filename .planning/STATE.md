@@ -1,6 +1,6 @@
 # Project State
 
-Last activity: 2026-03-13 - Completed quick task 11: Rate-limit sysfs reads in temperature and load widgets
+Last activity: 2026-03-13 - Completed quick task 12: Fix main loop spinning
 
 ### Blockers/Concerns
 
@@ -16,3 +16,4 @@ None
 | 9 | Skip blink timeout when not needed | 2026-03-13 | dce261e | Verified | [9-skip-blink-timeout-when-not-needed-and-i](./quick/9-skip-blink-timeout-when-not-needed-and-i/) |
 | 10 | Rate-limit battery sysfs reads to once per second | 2026-03-13 | 96e2002 | Verified | [10-rate-limit-battery-state-read-from-sys-t](./quick/10-rate-limit-battery-state-read-from-sys-t/) |
 | 11 | Rate-limit sysfs reads in temperature and load widgets | 2026-03-13 | f2e3b4b | Verified | [11-rate-limit-sysfs-reads-to-once-per-secon](./quick/11-rate-limit-sysfs-reads-to-once-per-secon/) |
+| 12 | Fix main loop spinning: drain inactive layer fds | 2026-03-13 | 37eb64a | | [12-fix-main-loop-spinning-drain-inactive-la](./quick/12-fix-main-loop-spinning-drain-inactive-la/) |
