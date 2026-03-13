@@ -2,6 +2,7 @@ use iced_core::alignment;
 use iced_core::{Color, Element, Length, Theme};
 use iced_widget::{container, text};
 use std::fs;
+use std::time::Instant;
 
 use super::{
     button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
@@ -19,6 +20,8 @@ pub struct LoadAvgWidget {
     color: Option<(f64, f64, f64)>,
     load_avg_failed: bool,
     last_reading: String,
+    cached_reading: String,
+    last_sysfs_read: Option<Instant>,
 }
 
 impl LoadAvgWidget {
@@ -28,6 +31,20 @@ impl LoadAvgWidget {
             color,
             load_avg_failed: false,
             last_reading: String::new(),
+            cached_reading: String::new(),
+            last_sysfs_read: None,
+        }
+    }
+
+    /// Refresh cached load average reading from procfs if at least 1 second has elapsed.
+    fn refresh_if_needed(&mut self) {
+        let stale = match self.last_sysfs_read {
+            None => true,
+            Some(t) => t.elapsed() >= std::time::Duration::from_secs(1),
+        };
+        if stale {
+            self.cached_reading = get_load_avg();
+            self.last_sysfs_read = Some(Instant::now());
         }
     }
 }
@@ -35,7 +52,7 @@ impl LoadAvgWidget {
 impl Widget for LoadAvgWidget {
     fn render(&self, ctx: &RenderContext) -> Element<'_, Message, Theme, IcedRenderer> {
         let style_color = self.color;
-        let reading = get_load_avg();
+        let reading = self.cached_reading.clone();
 
         container(
             text(reading)
@@ -55,7 +72,8 @@ impl Widget for LoadAvgWidget {
     }
 
     fn update(&mut self) -> bool {
-        let reading = get_load_avg();
+        self.refresh_if_needed();
+        let reading = self.cached_reading.clone();
         // Report load avg failure via log-once pattern
         let ok = reading != "--";
         if ok && self.load_avg_failed {
