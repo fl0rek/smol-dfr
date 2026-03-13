@@ -299,6 +299,14 @@ fn real_main(drm: &mut DrmBackend) {
             needs_redraw = false;
         }
 
+        // Drain widget fds right before blocking to clear signals that
+        // accumulated during rendering/processing. Background threads
+        // (niri, PulseAudio) continuously signal eventfds; if we don't
+        // drain here, epoll.wait() returns immediately every time.
+        if layer_mgr.poll() {
+            needs_redraw = true;
+        }
+
         let _ = epoll.wait(
             &mut [EpollEvent::new(EpollFlags::EPOLLIN, 0)],
             timeout as u16,
