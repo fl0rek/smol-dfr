@@ -2,6 +2,7 @@ use iced_core::alignment;
 use iced_core::{Color, Element, Length, Theme};
 use iced_widget::{container, text, Stack};
 use std::fs;
+use std::time::Instant;
 
 use crate::battery_icon_widget::BatteryIconWidget;
 
@@ -138,6 +139,9 @@ pub struct BatteryWidget {
     battery_failed: bool,
     last_capacity: Option<u32>,
     last_state: Option<BatteryState>,
+    cached_state: Option<(u32, BatteryState)>,
+    cached_time_estimate: Option<String>,
+    last_sysfs_read: Option<Instant>,
 }
 
 impl BatteryWidget {
@@ -158,7 +162,27 @@ impl BatteryWidget {
             battery_failed: false,
             last_capacity: None,
             last_state: None,
+            cached_state: None,
+            cached_time_estimate: None,
+            last_sysfs_read: None,
         })
+    }
+
+    /// Refresh cached battery state from sysfs if at least 1 second has elapsed.
+    fn refresh_if_needed(&mut self) {
+        let stale = match self.last_sysfs_read {
+            None => true,
+            Some(t) => t.elapsed() >= std::time::Duration::from_secs(1),
+        };
+        if stale {
+            let state = get_battery_state(&self.battery_device);
+            let charging = state
+                .map(|(_, s)| s == BatteryState::Charging)
+                .unwrap_or(false);
+            self.cached_time_estimate = get_battery_time_estimate(&self.battery_device, charging);
+            self.cached_state = state;
+            self.last_sysfs_read = Some(Instant::now());
+        }
     }
 }
 
@@ -167,14 +191,16 @@ impl Widget for BatteryWidget {
         let style_color = self.color;
         let style_active = self.active;
 
-        let state = get_battery_state(&self.battery_device);
+        let state = self.cached_state;
 
         if ctx.show_battery_time {
             // Show time estimate text
             let charging = state
                 .map(|(_, s)| s == BatteryState::Charging)
                 .unwrap_or(false);
-            let time_text = get_battery_time_estimate(&self.battery_device, charging)
+            let time_text = self
+                .cached_time_estimate
+                .clone()
                 .unwrap_or_else(|| "N/A".to_string());
             let text_color = if charging {
                 Color::from_rgb(0.3, 0.9, 0.3)
@@ -257,7 +283,8 @@ impl Widget for BatteryWidget {
     }
 
     fn update(&mut self) -> bool {
-        let state = get_battery_state(&self.battery_device);
+        self.refresh_if_needed();
+        let state = self.cached_state;
         let ok = state.is_some();
         // Report battery failure via log-once pattern
         if ok && self.battery_failed {
