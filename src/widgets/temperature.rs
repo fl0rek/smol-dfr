@@ -2,6 +2,7 @@ use iced_core::alignment;
 use iced_core::{Color, Element, Length, Theme};
 use iced_widget::{container, text};
 use std::fs;
+use std::time::Instant;
 
 use super::{
     button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
@@ -53,6 +54,8 @@ pub struct TemperatureWidget {
     color: Option<(f64, f64, f64)>,
     thermal_failed: bool,
     last_reading: String,
+    cached_reading: String,
+    last_sysfs_read: Option<Instant>,
 }
 
 impl TemperatureWidget {
@@ -65,7 +68,21 @@ impl TemperatureWidget {
             color,
             thermal_failed: false,
             last_reading: String::new(),
+            cached_reading: String::new(),
+            last_sysfs_read: None,
         })
+    }
+
+    /// Refresh cached temperature reading from sysfs if at least 1 second has elapsed.
+    fn refresh_if_needed(&mut self) {
+        let stale = match self.last_sysfs_read {
+            None => true,
+            Some(t) => t.elapsed() >= std::time::Duration::from_secs(1),
+        };
+        if stale {
+            self.cached_reading = get_temperature(&self.zone);
+            self.last_sysfs_read = Some(Instant::now());
+        }
     }
 }
 
@@ -73,7 +90,7 @@ impl Widget for TemperatureWidget {
     fn render(&self, ctx: &RenderContext) -> Element<'_, Message, Theme, IcedRenderer> {
         let style_color = self.color;
 
-        let reading = get_temperature(&self.zone);
+        let reading = self.cached_reading.clone();
 
         container(
             text(reading)
@@ -93,7 +110,8 @@ impl Widget for TemperatureWidget {
     }
 
     fn update(&mut self) -> bool {
-        let reading = get_temperature(&self.zone);
+        self.refresh_if_needed();
+        let reading = self.cached_reading.clone();
         // Report thermal failure via log-once pattern
         let ok = reading != "--";
         if ok && self.thermal_failed {
