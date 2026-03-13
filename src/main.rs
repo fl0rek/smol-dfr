@@ -270,17 +270,17 @@ fn real_main(drm: &mut DrmBackend) {
         }
 
         let now_i = Instant::now();
-        if now_i.duration_since(last_blink).as_millis() >= 500 {
-            blink_on = !blink_on;
-            last_blink = now_i;
-            if layer_mgr.needs_blink() {
+        if layer_mgr.needs_blink() {
+            if now_i.duration_since(last_blink).as_millis() >= 500 {
+                blink_on = !blink_on;
+                last_blink = now_i;
                 needs_redraw = true;
             }
+            timeout = min(
+                timeout,
+                (500 - now_i.duration_since(last_blink).as_millis() as i32).max(1),
+            );
         }
-        timeout = min(
-            timeout,
-            (500 - now_i.duration_since(last_blink).as_millis() as i32).max(1),
-        );
 
         if let Some(deadline) = battery_time_until {
             if now_i >= deadline {
