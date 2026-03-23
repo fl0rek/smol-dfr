@@ -12,8 +12,8 @@ use std::os::fd::BorrowedFd;
 
 pub struct VolumeWidget {
     manager: VolumeManager,
-    down_icon: Option<String>,
-    up_icon: Option<String>,
+    down_handle: Option<svg::Handle>,
+    up_handle: Option<svg::Handle>,
     width_fraction: f64,
     color: Option<(f64, f64, f64)>,
     active: bool,
@@ -27,8 +27,8 @@ impl VolumeWidget {
     ) -> Self {
         Self {
             manager: VolumeManager::new(pulse_server),
-            down_icon: resolve_icon_path("volume_down"),
-            up_icon: resolve_icon_path("volume_up"),
+            down_handle: resolve_icon_path("volume_down").map(svg::Handle::from_path),
+            up_handle: resolve_icon_path("volume_up").map(svg::Handle::from_path),
             width_fraction,
             color,
             active: false,
@@ -57,21 +57,21 @@ impl Widget for VolumeWidget {
             }
         };
 
-        let make_icon = |icon: &Option<String>| -> Element<'_, Message, Theme, IcedRenderer> {
-            if let Some(path) = icon {
-                let handle = svg::Handle::from_path(path);
-                svg::Svg::new(handle)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .content_fit(ContentFit::Contain)
-                    .into()
-            } else {
-                text("").width(Length::Fill).height(Length::Fill).into()
-            }
-        };
+        let make_icon =
+            |handle: &Option<svg::Handle>| -> Element<'_, Message, Theme, IcedRenderer> {
+                if let Some(h) = handle {
+                    svg::Svg::new(h.clone())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .content_fit(ContentFit::Contain)
+                        .into()
+                } else {
+                    text("").width(Length::Fill).height(Length::Fill).into()
+                }
+            };
 
         let left: Element<'_, Message, Theme, IcedRenderer> = container(
-            mouse_area(make_icon(&self.down_icon))
+            mouse_area(make_icon(&self.down_handle))
                 .on_press(Message::VolumeDownPress)
                 .on_release(Message::VolumeDownRelease)
                 .on_exit(Message::VolumeDownRelease),
@@ -97,7 +97,7 @@ impl Widget for VolumeWidget {
         .into();
 
         let right: Element<'_, Message, Theme, IcedRenderer> = container(
-            mouse_area(make_icon(&self.up_icon))
+            mouse_area(make_icon(&self.up_handle))
                 .on_press(Message::VolumeUpPress)
                 .on_release(Message::VolumeUpRelease)
                 .on_exit(Message::VolumeUpRelease),

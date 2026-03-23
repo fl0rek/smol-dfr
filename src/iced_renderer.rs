@@ -27,6 +27,12 @@ pub struct TouchbarRenderer {
     widget_tree: Option<Tree>,
     font: Font,
     font_size: f32,
+    /// Reusable pixmap buffer (logical_width × fb_height)
+    pixmap: Pixmap,
+    /// Reusable clip mask (logical_width × fb_height)
+    clip_mask: tiny_skia::Mask,
+    /// Reusable rotation output buffer (fb_height × logical_width × 4 bytes)
+    rotated_buf: Vec<u8>,
 }
 
 impl TouchbarRenderer {
@@ -59,6 +65,10 @@ impl TouchbarRenderer {
             stretch: Stretch::Normal,
         };
         let renderer = IcedRenderer::new(font, Pixels(font_size));
+        let pixmap = Pixmap::new(logical_width, fb_height).expect("Failed to create pixmap");
+        let clip_mask =
+            tiny_skia::Mask::new(logical_width, fb_height).expect("Failed to create clip mask");
+        let rotated_buf = vec![0u8; fb_height as usize * logical_width as usize * 4];
         Self {
             renderer,
             logical_width,
@@ -67,6 +77,9 @@ impl TouchbarRenderer {
             widget_tree: None,
             font,
             font_size,
+            pixmap,
+            clip_mask,
+            rotated_buf,
         }
     }
 
@@ -89,12 +102,13 @@ impl TouchbarRenderer {
         }
     }
 
-    /// Shared layout+draw+rotate pipeline.
+    /// Shared layout+draw+rotate pipeline. Reuses internal buffers to avoid
+    /// per-frame allocations (~1.1 MB saved per render).
     fn render_element<M: 'static>(
         &mut self,
         element: &Element<'_, M, Theme, IcedRenderer>,
         tree: &mut Tree,
-    ) -> Vec<u8> {
+    ) -> &[u8] {
         let w = self.logical_width;
         let vis_h = self.visible_height;
         let fb_h = self.fb_height;
@@ -125,15 +139,14 @@ impl TouchbarRenderer {
             &viewport_rect,
         );
 
-        // Flush to pixmap
-        let mut pixmap = Pixmap::new(w, fb_h).expect("Failed to create pixmap");
-        let mut clip_mask = tiny_skia::Mask::new(w, fb_h).expect("Failed to create clip mask");
+        // Clear reusable pixmap and flush renderer into it
+        self.pixmap.data_mut().fill(0);
         let viewport = Viewport::with_physical_size(Size::new(w, fb_h), 1.0);
         let damage = [viewport_rect];
 
         self.renderer.draw(
-            &mut pixmap.as_mut(),
-            &mut clip_mask,
+            &mut self.pixmap.as_mut(),
+            &mut self.clip_mask,
             &viewport,
             &damage,
             Color::BLACK,
@@ -142,7 +155,7 @@ impl TouchbarRenderer {
 
         #[cfg(feature = "screenshot")]
         {
-            match pixmap.encode_png() {
+            match self.pixmap.encode_png() {
                 Ok(png_data) => {
                     if let Err(e) = std::fs::write("/tmp/smol-dfr-screenshot.png", &png_data) {
                         eprintln!("screenshot: failed to write PNG: {e}");
@@ -154,27 +167,30 @@ impl TouchbarRenderer {
 
         // Rotate 90 CW: landscape pixmap (w, fb_h) -> portrait buffer (fb_h, w)
         // Uses destination-row-major iteration for cache-friendly sequential writes.
-        rotate_and_convert(
-            pixmap.data(),
+        rotate_and_convert_into(
+            self.pixmap.data(),
             w as usize,
             vis_h as usize,
             fb_h as usize,
             w as usize,
-        )
+            &mut self.rotated_buf,
+        );
+        &self.rotated_buf
     }
 
     /// Render a list of Widget trait objects to a rotated XRGB8888 buffer.
-    pub fn render_widgets(&mut self, widgets: &[Box<dyn Widget>], ctx: &RenderContext) -> Vec<u8> {
+    /// Returns a slice into the internal rotation buffer (zero allocations).
+    pub fn render_widgets(&mut self, widgets: &[Box<dyn Widget>], ctx: &RenderContext) -> &[u8] {
         self.renderer.clear();
 
         let element = build_widget_row(widgets, ctx);
         Self::sync_tree_slot(&mut self.widget_tree, &element);
         let mut tree = self.widget_tree.take().unwrap();
 
-        let rotated = self.render_element(&element, &mut tree);
+        self.render_element(&element, &mut tree);
 
         self.widget_tree = Some(tree);
-        rotated
+        &self.rotated_buf
     }
 
     /// Process a touch event through the Widget rendering path.
@@ -276,7 +292,8 @@ pub fn translate_touch(
     }
 }
 
-/// Rotate 90 degrees clockwise and convert premultiplied RGBA to BGRX (XRGB8888).
+/// Rotate 90 degrees clockwise and convert premultiplied RGBA to BGRX (XRGB8888),
+/// writing into a caller-provided buffer to avoid per-frame allocation.
 ///
 /// Iterates in destination-row-major order for cache-friendly sequential writes.
 /// Source pixels are premultiplied alpha; this function unpacks them before storing.
@@ -287,14 +304,17 @@ pub fn translate_touch(
 /// - `src_h`: source height (visible rows to process, may be < pixmap height)
 /// - `dst_w`: destination width after rotation (fb_height)
 /// - `dst_h`: destination height after rotation (logical_width)
-fn rotate_and_convert(
+/// - `dst`: output buffer, must be at least `dst_w * dst_h * 4` bytes
+fn rotate_and_convert_into(
     src_data: &[u8],
     src_w: usize,
     src_h: usize,
     dst_w: usize,
     dst_h: usize,
-) -> Vec<u8> {
-    let mut rotated = vec![0u8; dst_w * dst_h * 4];
+    dst: &mut [u8],
+) {
+    // Clear buffer (padding rows beyond src_h need to be black)
+    dst[..dst_w * dst_h * 4].fill(0);
 
     for dy in 0..dst_h {
         for dx in 0..dst_w {
@@ -303,7 +323,7 @@ fn rotate_and_convert(
             // Inverse of 90 CW rotation: src_x = dy, src_y = (dst_w - 1 - dx)
             let sy = dst_w - 1 - dx;
             if sy >= src_h {
-                // Beyond visible rows -- leave as black (0,0,0,0) from vec init
+                // Beyond visible rows -- already zeroed
                 continue;
             }
             let sx = dy;
@@ -327,14 +347,26 @@ fn rotate_and_convert(
                 )
             };
 
-            rotated[dst_idx] = b;
-            rotated[dst_idx + 1] = g;
-            rotated[dst_idx + 2] = r;
-            rotated[dst_idx + 3] = 0xFF;
+            dst[dst_idx] = b;
+            dst[dst_idx + 1] = g;
+            dst[dst_idx + 2] = r;
+            dst[dst_idx + 3] = 0xFF;
         }
     }
+}
 
-    rotated
+/// Allocating version for tests.
+#[cfg(test)]
+fn rotate_and_convert(
+    src_data: &[u8],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Vec<u8> {
+    let mut dst = vec![0u8; dst_w * dst_h * 4];
+    rotate_and_convert_into(src_data, src_w, src_h, dst_w, dst_h, &mut dst);
+    dst
 }
 
 /// Build an iced Element row from Widget trait objects.

@@ -30,15 +30,12 @@ impl LayerManager {
                 config.volume.as_ref(),
             ),
         ];
-        let mut fd_registry = FdRegistry::new(10);
-        for (li, l) in layers.iter().enumerate() {
-            for (wi, w) in l.iter().enumerate() {
-                let fds = w.event_fds();
-                if !fds.is_empty() {
-                    fd_registry.register(epoll, li * 1000 + wi, &fds);
-                }
-            }
-        }
+        // NOTE: Widget eventfds are NOT registered with epoll. Background
+        // threads (niri, PulseAudio) signal them so frequently that epoll
+        // never blocks, spinning the main loop at 130k iterations/s.
+        // Instead, widget state changes are picked up by poll() which is
+        // called every loop iteration regardless.
+        let fd_registry = FdRegistry::new(10);
         // Register config fd with epoll (data=2 to match existing convention)
         epoll
             .add(cfg_mgr.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 2))
@@ -97,16 +94,8 @@ impl LayerManager {
                 self.config.volume.as_ref(),
             ),
         ];
-        // Old fds auto-unregister when widgets are dropped. Re-register new fds.
+        // Widget fds are NOT registered with epoll (see comment in new()).
         self.fd_registry = FdRegistry::new(10);
-        for (li, l) in self.layers.iter().enumerate() {
-            for (wi, w) in l.iter().enumerate() {
-                let fds = w.event_fds();
-                if !fds.is_empty() {
-                    self.fd_registry.register(epoll, li * 1000 + wi, &fds);
-                }
-            }
-        }
         true
     }
 
