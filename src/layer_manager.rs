@@ -30,12 +30,8 @@ impl LayerManager {
                 config.volume.as_ref(),
             ),
         ];
-        // NOTE: Widget eventfds are NOT registered with epoll. Background
-        // threads (niri, PulseAudio) signal them so frequently that epoll
-        // never blocks, spinning the main loop at 130k iterations/s.
-        // Instead, widget state changes are picked up by poll() which is
-        // called every loop iteration regardless.
-        let fd_registry = FdRegistry::new(10);
+        let mut fd_registry = FdRegistry::new(10);
+        fd_registry.register_all(epoll, &layers);
         // Register config fd with epoll (data=2 to match existing convention)
         epoll
             .add(cfg_mgr.fd(), EpollEvent::new(EpollFlags::EPOLLIN, 2))
@@ -82,6 +78,9 @@ impl LayerManager {
             return false;
         }
         self.active_layer = 0;
+        // Remove old widget fds from epoll while widgets are still alive
+        // (fd numbers must be valid for epoll_ctl DEL).
+        FdRegistry::unregister_all(epoll, &self.layers);
         self.layers = [
             build_widget_layer(
                 &self.widget_entries[0],
@@ -94,8 +93,8 @@ impl LayerManager {
                 self.config.volume.as_ref(),
             ),
         ];
-        // Widget fds are NOT registered with epoll (see comment in new()).
         self.fd_registry = FdRegistry::new(10);
+        self.fd_registry.register_all(epoll, &self.layers);
         true
     }
 
@@ -108,9 +107,9 @@ impl LayerManager {
             .fold(false, |changed, w| w.update() || changed)
     }
 
-    /// Call poll() on ALL layers' widgets to drain their fds, but only report
-    /// changes from the active layer. Without draining inactive layer fds,
-    /// epoll returns immediately every iteration (busy-spinning the main loop).
+    /// Call poll() on ALL layers' widgets to drain their eventfds, but only
+    /// report changes from the active layer. Both layers must be drained so
+    /// that stale signals don't cause unnecessary epoll wakeups.
     pub fn poll(&mut self) -> bool {
         let active = self.active_layer;
         let mut active_changed = false;

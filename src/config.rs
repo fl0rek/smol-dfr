@@ -353,7 +353,8 @@ pub struct ConfigManager {
 }
 
 fn arm_inotify(inotify_fd: &Inotify) -> Option<WatchDescriptor> {
-    let flags = AddWatchFlags::IN_MOVED_TO | AddWatchFlags::IN_CLOSE | AddWatchFlags::IN_ONESHOT;
+    let flags =
+        AddWatchFlags::IN_MOVED_TO | AddWatchFlags::IN_CLOSE_WRITE | AddWatchFlags::IN_ONESHOT;
     match inotify_fd.add_watch(user_cfg_path(), flags) {
         Ok(wd) => Some(wd),
         Err(Errno::ENOENT) => None,

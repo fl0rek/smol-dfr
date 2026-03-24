@@ -63,44 +63,48 @@ pub enum Message {
 }
 
 /// Centralized epoll fd registration for widgets.
+/// Tracks registered fds so they can be removed before widgets are dropped.
 pub(crate) struct FdRegistry {
-    entries: Vec<(u64, usize)>,
     next_data: u64,
 }
 
 impl FdRegistry {
     pub fn new(start_data: u64) -> Self {
         Self {
-            entries: Vec::new(),
             next_data: start_data,
         }
     }
 
-    /// Register a widget's fds with epoll. Stores the (data, widget_idx) mapping.
-    pub fn register(
+    /// Register all widget fds from both layers with epoll.
+    pub fn register_all(
         &mut self,
         epoll: &nix::sys::epoll::Epoll,
-        widget_idx: usize,
-        fds: &[BorrowedFd],
+        layers: &[Vec<Box<dyn Widget>>; 2],
     ) {
         use nix::sys::epoll::{EpollEvent, EpollFlags};
-        for fd in fds {
-            let ev = EpollEvent::new(EpollFlags::EPOLLIN, self.next_data);
-            if let Err(e) = epoll.add(*fd, ev) {
-                eprintln!("Warning: failed to register widget fd with epoll: {e}");
-            } else {
-                self.entries.push((self.next_data, widget_idx));
+        for layer in layers {
+            for widget in layer {
+                for fd in widget.event_fds() {
+                    let ev = EpollEvent::new(EpollFlags::EPOLLIN, self.next_data);
+                    if let Err(e) = epoll.add(fd, ev) {
+                        eprintln!("Warning: failed to register widget fd with epoll: {e}");
+                    }
+                    self.next_data += 1;
+                }
             }
-            self.next_data += 1;
         }
     }
 
-    /// Look up which widget index owns a given epoll data value.
-    pub fn widget_for_data(&self, data: u64) -> Option<usize> {
-        self.entries
-            .iter()
-            .find(|(d, _)| *d == data)
-            .map(|(_, idx)| *idx)
+    /// Remove all widget fds from epoll. Must be called while widgets are
+    /// still alive so the fd numbers remain valid.
+    pub fn unregister_all(epoll: &nix::sys::epoll::Epoll, layers: &[Vec<Box<dyn Widget>>; 2]) {
+        for layer in layers {
+            for widget in layer {
+                for fd in widget.event_fds() {
+                    let _ = epoll.delete(fd);
+                }
+            }
+        }
     }
 }
 

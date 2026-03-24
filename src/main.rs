@@ -228,52 +228,7 @@ fn real_main(drm: &mut DrmBackend) {
     let mut digitizer: Option<InputDevice> = None;
     let mut touch_positions: HashMap<u32, iced_core::Point> = HashMap::new();
 
-    // Profiling counters — printed every 5 seconds
-    let mut prof_start = Instant::now();
-    let mut prof_loops: u64 = 0;
-    let mut prof_renders: u64 = 0;
-    let mut prof_render_us: u64 = 0;
-    let mut prof_poll_us: u64 = 0;
-    let mut prof_wait_us: u64 = 0;
-    let mut prof_update_us: u64 = 0;
-    let mut prof_input_us: u64 = 0;
-    let mut prof_timeout_sum: u64 = 0;
-    let mut prof_redraw_reason = [0u64; 6]; // [update, poll_pre, poll_post, blink, pixshift, other]
-    let mut prof_epoll_data = [0u64; 16]; // [0..13=fd data, 14=timeout, 15=widget fds]
-
     loop {
-        prof_loops += 1;
-        let loop_top = Instant::now();
-        if loop_top.duration_since(prof_start).as_secs() >= 5 {
-            let elapsed = loop_top.duration_since(prof_start).as_millis().max(1) as f64;
-            eprintln!(
-                "PROF: {:.1}s | loops={} ({:.0}/s) renders={} | render={:.1}ms poll={:.1}ms wait={:.1}ms update={:.1}ms input={:.1}ms | avg_timeout={:.0}ms | redraw: upd={} ppre={} ppost={} | epoll_fd: 0={} 1={} 2={} 3={} 6={} wdg={} tmout={}",
-                elapsed / 1000.0,
-                prof_loops, prof_loops as f64 / (elapsed / 1000.0),
-                prof_renders,
-                prof_render_us as f64 / 1000.0,
-                prof_poll_us as f64 / 1000.0,
-                prof_wait_us as f64 / 1000.0,
-                prof_update_us as f64 / 1000.0,
-                prof_input_us as f64 / 1000.0,
-                prof_timeout_sum as f64 / prof_loops.max(1) as f64,
-                prof_redraw_reason[0], prof_redraw_reason[1], prof_redraw_reason[2],
-                prof_epoll_data[0], prof_epoll_data[1], prof_epoll_data[2],
-                prof_epoll_data[3], prof_epoll_data[6], prof_epoll_data[15],
-                prof_epoll_data[14],
-            );
-            prof_start = loop_top;
-            prof_loops = 0;
-            prof_renders = 0;
-            prof_render_us = 0;
-            prof_poll_us = 0;
-            prof_wait_us = 0;
-            prof_update_us = 0;
-            prof_input_us = 0;
-            prof_timeout_sum = 0;
-            prof_redraw_reason = [0; 6];
-            prof_epoll_data = [0; 16];
-        }
         if layer_mgr.check_config_reload(&epoll) {
             let cfg = layer_mgr.config();
             iced_rndr = TouchbarRenderer::new(
@@ -295,7 +250,6 @@ fn real_main(drm: &mut DrmBackend) {
             let (ps_redraw, ps_t) = pixel_shift.update();
             if ps_redraw {
                 needs_redraw = true;
-                prof_redraw_reason[4] += 1;
             }
             timeout = min(timeout, ps_t);
         }
@@ -311,7 +265,6 @@ fn real_main(drm: &mut DrmBackend) {
                 blink_on = !blink_on;
                 last_blink = now_i;
                 needs_redraw = true;
-                prof_redraw_reason[3] += 1;
             }
             timeout = min(
                 timeout,
@@ -328,15 +281,11 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
 
-        let t0 = Instant::now();
         if layer_mgr.update() {
             needs_redraw = true;
-            prof_redraw_reason[0] += 1;
         }
-        prof_update_us += t0.elapsed().as_micros() as u64;
 
         if needs_redraw {
-            let t_render = Instant::now();
             let ctx = RenderContext {
                 font: iced_rndr.font(),
                 font_size: iced_rndr.font_size(),
@@ -348,46 +297,22 @@ fn real_main(drm: &mut DrmBackend) {
             drm.map().unwrap().as_mut()[..buf.len()].copy_from_slice(buf);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
             needs_redraw = false;
-            prof_renders += 1;
-            prof_render_us += t_render.elapsed().as_micros() as u64;
         }
 
-        // Drain widget fds right before blocking to clear signals that
-        // accumulated during rendering/processing. Background threads
-        // (niri, PulseAudio) continuously signal eventfds; if we don't
-        // drain here, epoll.wait() returns immediately every time.
-        let t_poll1 = Instant::now();
+        // Drain widget eventfds before blocking to clear signals accumulated
+        // during processing. Minimizes the window for a race where a background
+        // thread signals between drain and epoll.wait().
         if layer_mgr.poll() {
             needs_redraw = true;
-            prof_redraw_reason[1] += 1;
         }
-        prof_poll_us += t_poll1.elapsed().as_micros() as u64;
 
-        prof_timeout_sum += timeout as u64;
-        let t_wait = Instant::now();
-        let mut ep_events = [EpollEvent::new(EpollFlags::EPOLLIN, 0); 8];
-        let n_ready = epoll.wait(&mut ep_events, timeout as u16).unwrap_or(0);
-        prof_wait_us += t_wait.elapsed().as_micros() as u64;
-        // Track which epoll data values fire most often
-        for i in 0..n_ready {
-            let d = ep_events[i].data();
-            if d < 16 {
-                prof_epoll_data[d as usize] += 1;
-            } else {
-                prof_epoll_data[15] += 1; // overflow bucket for widget fds
-            }
-        }
-        if n_ready == 0 {
-            prof_epoll_data[14] += 1; // timeout bucket
-        }
+        let mut ep_events = [EpollEvent::new(EpollFlags::EPOLLIN, 0)];
+        epoll.wait(&mut ep_events, timeout as u16).unwrap_or(0);
 
         _ = udev_monitor.iter().last();
-        let t_poll2 = Instant::now();
         if layer_mgr.poll() {
             needs_redraw = true;
-            prof_redraw_reason[2] += 1;
         }
-        prof_poll_us += t_poll2.elapsed().as_micros() as u64;
 
         // Reconnection
         let re = reconnect_watcher.check_events();
@@ -407,7 +332,6 @@ fn real_main(drm: &mut DrmBackend) {
         }
 
         // Input
-        let t_input = Instant::now();
         if let Err(e) = input_tb.dispatch() {
             eprintln!("Warning: touchbar dispatch: {e}");
         }
@@ -471,7 +395,6 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
         backlight.update_backlight(layer_mgr.config());
-        prof_input_us += t_input.elapsed().as_micros() as u64;
     }
 }
 
