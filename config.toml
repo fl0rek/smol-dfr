@@ -111,7 +111,6 @@ PrimaryLayerKeys = [
     { Type = "memory", Width = 5.0, Color = "#073642", SampleInterval = 1000, GraphWindow = 60 },
     { Type = "time", Format = "%H:%M", Action = "Time", Width = 4.0, Color = "#073642" },
     { Type = "time", Format = "%Y-%m-%d", Action = "Time", Width = 8.0, Color = "#073642" },
-    { Type = "volume", Width = 7.0, Color = "#073642" },
     { Type = "battery", Mode = "percentage", Action = "Battery", Width = 5.0, Color = "#000000" },
 
     # Example with Width:
@@ -154,8 +153,9 @@ MediaLayerKeys = [
     { Type = "icon", Icon = "play_pause",      Action = "PlayPause"      },
     { Type = "icon", Icon = "fast_forward",    Action = "NextSong"       },
     { Type = "icon", Icon = "volume_off",      Action = "Mute"           },
-    { Type = "icon", Icon = "volume_down",     Action = "VolumeDown"     },
-    { Type = "icon", Icon = "volume_up",       Action = "VolumeUp"       },
+    { Type = "volume", Width = 10.0, Color = "#073642" },
+    # { Type = "icon", Icon = "volume_down",     Action = "VolumeDown"     },
+    # { Type = "icon", Icon = "volume_up",       Action = "VolumeUp"       },
 
     # Example with XDG icons (requires `breeze-dark` theme installed):
     # { Type = "icon", Icon = "brightness-low",       Theme = "breeze-dark", Action = "BrightnessDown" },
