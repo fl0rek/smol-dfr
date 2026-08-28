@@ -299,13 +299,6 @@ fn real_main(drm: &mut DrmBackend) {
             needs_redraw = false;
         }
 
-        // Drain widget eventfds before blocking to clear signals accumulated
-        // during processing. Minimizes the window for a race where a background
-        // thread signals between drain and epoll.wait().
-        if layer_mgr.poll() {
-            needs_redraw = true;
-        }
-
         let mut ep_events = [EpollEvent::new(EpollFlags::EPOLLIN, 0)];
         epoll.wait(&mut ep_events, timeout as u16).unwrap_or(0);
 
