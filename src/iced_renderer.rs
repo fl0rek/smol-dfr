@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use iced_core::clipboard;
 use iced_core::font::{Family, Stretch, Style, Weight};
 use iced_core::layout::{Layout, Limits};
@@ -14,6 +16,19 @@ use tiny_skia::Pixmap;
 use crate::widgets::{Message as WidgetMessage, RenderContext, Widget};
 
 type IcedRenderer = iced_tiny_skia::Renderer;
+
+/// Intern a font family name so it gets a `&'static str` without leaking on
+/// every config reload. Previously-interned names are reused.
+fn intern_font_family(name: &str) -> &'static str {
+    static INTERNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut interned = INTERNED.lock().unwrap();
+    if let Some(existing) = interned.iter().find(|s| **s == name) {
+        return *existing;
+    }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    interned.push(leaked);
+    leaked
+}
 
 pub struct TouchbarRenderer {
     renderer: IcedRenderer,
@@ -48,7 +63,7 @@ impl TouchbarRenderer {
         let family = if font_family.is_empty() {
             Family::SansSerif
         } else {
-            Family::Name(font_family.to_string().leak())
+            Family::Name(intern_font_family(font_family))
         };
         let font = Font {
             family,
