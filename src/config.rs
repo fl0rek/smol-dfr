@@ -84,7 +84,6 @@ fn user_cfg_path() -> &'static str {
 
 pub struct Config {
     pub show_button_outlines: bool,
-    pub enable_pixel_shift: bool,
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
     pub font_family: String,
@@ -100,7 +99,6 @@ pub struct Config {
 struct ConfigProxy {
     media_layer_default: Option<bool>,
     show_button_outlines: Option<bool>,
-    enable_pixel_shift: Option<bool>,
     font_family: Option<String>,
     font_size: Option<f64>,
     font_style: Option<String>,
@@ -216,7 +214,6 @@ pub struct WidgetEntry {
 struct BaseConfigProxy {
     media_layer_default: Option<bool>,
     show_button_outlines: Option<bool>,
-    enable_pixel_shift: Option<bool>,
     font_family: Option<String>,
     font_size: Option<f64>,
     font_style: Option<String>,
@@ -229,7 +226,6 @@ impl BaseConfigProxy {
         ConfigProxy {
             media_layer_default: self.media_layer_default,
             show_button_outlines: self.show_button_outlines,
-            enable_pixel_shift: self.enable_pixel_shift,
             font_family: self.font_family,
             font_size: self.font_size,
             font_style: self.font_style,
@@ -271,7 +267,6 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     if let Ok(user) = user {
         base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
-        base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
         base.font_family = user.font_family.or(base.font_family);
         base.font_size = user.font_size.or(base.font_size);
         base.font_style = user.font_style.or(base.font_style);
@@ -327,9 +322,6 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         show_button_outlines: base
             .show_button_outlines
             .ok_or("missing ShowButtonOutlines in config")?,
-        enable_pixel_shift: base
-            .enable_pixel_shift
-            .ok_or("missing EnablePixelShift in config")?,
         adaptive_brightness: base
             .adaptive_brightness
             .ok_or("missing AdaptiveBrightness in config")?,

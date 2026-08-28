@@ -26,7 +26,6 @@ mod iced_renderer;
 mod layer_manager;
 mod memory_graph;
 mod memory_graph_widget;
-mod pixel_shift;
 mod reconnect;
 mod session_detect;
 mod volume;
@@ -37,7 +36,6 @@ use backlight::BacklightManager;
 use display::DrmBackend;
 use iced_renderer::TouchbarRenderer;
 use layer_manager::LayerManager;
-use pixel_shift::PixelShiftManager;
 use reconnect::ReconnectWatcher;
 use widgets::{MainLoopAction, Message, RenderContext, WidgetAction};
 
@@ -115,7 +113,6 @@ fn real_main(drm: &mut DrmBackend) {
     let (db_width, _) = drm.fb_info().unwrap().size();
     let mut uinput = UInputHandle::new(OpenOptions::new().write(true).open("/dev/uinput").unwrap());
     let mut backlight = BacklightManager::new();
-    let mut pixel_shift = PixelShiftManager::new();
 
     // Privilege drop
     let session_user = session_detect::detect_graphical_session_user();
@@ -244,15 +241,7 @@ fn real_main(drm: &mut DrmBackend) {
         }
 
         let now = Local::now();
-        let cfg = layer_mgr.config();
         let mut timeout = min(((60 - now.second()) * 1000) as i32, TIMEOUT_MS);
-        if cfg.enable_pixel_shift {
-            let (ps_redraw, ps_t) = pixel_shift.update();
-            if ps_redraw {
-                needs_redraw = true;
-            }
-            timeout = min(timeout, ps_t);
-        }
         // Shorten timeout for widgets that need faster refresh (e.g. time with seconds).
         // The actual redraw decision comes from widget update() returning true.
         if layer_mgr.needs_faster_refresh() {

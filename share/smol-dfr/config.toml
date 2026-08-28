@@ -10,11 +10,6 @@ MediaLayerDefault = false
 # leaving only the text/logo
 ShowButtonOutlines = true
 
-# Set this to true to slowly shift the entire screen contents.
-# In theory this helps with screen longevity, but macos does not bother doing it
-# Disabling ShowButtonOutlines will make this effect less noticeable to the eye
-EnablePixelShift = false
-
 # Set this to the fontconfig pattern to be used to pick a font for text labels
 # Some examples are:
 # "" - default regular sans-serif font

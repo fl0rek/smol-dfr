@@ -25,7 +25,6 @@ nix = { version = "0.29", features = ["event", "signal", "inotify"] }
 privdrop = "0.5.3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-rand = "0.8"
 chrono = { version = "0.4", features = ["unstable-locales"] }
 udev = "0.9"
 niri-ipc = "=25.11.0"
