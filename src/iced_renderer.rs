@@ -13,9 +13,7 @@ use iced_graphics::Viewport;
 use iced_widget::{container, mouse_area, row};
 use tiny_skia::Pixmap;
 
-use crate::widgets::{Message as WidgetMessage, RenderContext, Widget};
-
-type IcedRenderer = iced_tiny_skia::Renderer;
+use crate::widgets::{IcedRenderer, Message as WidgetMessage, RenderContext, Widget};
 
 /// Intern a font family name so it gets a `&'static str` without leaking on
 /// every config reload. Previously-interned names are reused.

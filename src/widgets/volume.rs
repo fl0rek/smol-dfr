@@ -4,10 +4,7 @@ use iced_widget::{container, mouse_area, row, svg, text};
 
 use crate::volume::VolumeManager;
 
-use super::{
-    button_style, resolve_icon_path, IcedRenderer, MainLoopAction, Message, RenderContext, Widget,
-    WidgetAction,
-};
+use super::{button_style, resolve_icon_path, IcedRenderer, Message, RenderContext, Widget};
 use std::os::fd::BorrowedFd;
 
 pub struct VolumeWidget {
@@ -33,11 +30,6 @@ impl VolumeWidget {
             color,
             active: false,
         }
-    }
-
-    /// Check and clear the reconnect flash flag.
-    pub fn has_reconnect_flash(&self) -> bool {
-        self.manager.has_reconnect_flash()
     }
 }
 
@@ -146,9 +138,5 @@ impl Widget for VolumeWidget {
 
     fn try_connect(&mut self) -> bool {
         self.manager.try_connect()
-    }
-
-    fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
-        vec![]
     }
 }

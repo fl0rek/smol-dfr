@@ -1,10 +1,9 @@
-use iced_core::alignment;
 use iced_core::{Color, ContentFit, Element, Length, Theme};
 use iced_widget::{container, svg, text};
 
 use super::{
-    button_style, resolve_icon_path, IcedRenderer, MainLoopAction, Message, RenderContext, Widget,
-    WidgetAction,
+    button_style, handle_key_action, resolve_icon_path, styled_text_widget, IcedRenderer,
+    MainLoopAction, Message, RenderContext, Widget, WidgetAction,
 };
 
 /// The kind of static content this button displays.
@@ -71,21 +70,9 @@ impl Widget for StaticButton {
         let style_active = self.active;
 
         match &self.variant {
-            StaticVariant::Text(label) => container(
-                text(label.clone())
-                    .font(ctx.font)
-                    .size(ctx.font_size)
-                    .color(Color::WHITE)
-                    .align_x(alignment::Horizontal::Center)
-                    .align_y(alignment::Vertical::Center)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(2)
-            .style(move |_theme: &Theme| button_style(style_color, style_active))
-            .into(),
+            StaticVariant::Text(label) => {
+                styled_text_widget(label.clone(), ctx, style_color, style_active)
+            }
 
             StaticVariant::Icon(Some(path)) => {
                 let handle = svg::Handle::from_path(path);
@@ -131,18 +118,6 @@ impl Widget for StaticButton {
     }
 
     fn handle_event(&mut self, action: WidgetAction) -> Vec<MainLoopAction> {
-        if self.action.is_empty() {
-            return vec![];
-        }
-        match action {
-            WidgetAction::Pressed => {
-                self.active = true;
-                vec![MainLoopAction::SendKeys(self.action.clone(), true)]
-            }
-            WidgetAction::Released => {
-                self.active = false;
-                vec![MainLoopAction::SendKeys(self.action.clone(), false)]
-            }
-        }
+        handle_key_action(&mut self.active, &self.action, action)
     }
 }

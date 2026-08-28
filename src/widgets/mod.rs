@@ -8,9 +8,10 @@ pub mod volume;
 pub mod window_title;
 pub mod workspace;
 
+use iced_core::alignment;
 use iced_core::font::Font;
-use iced_core::{Background, Border, Color, Element, Theme};
-use iced_widget::container;
+use iced_core::{Background, Border, Color, Element, Length, Theme};
+use iced_widget::{container, text};
 use std::os::fd::BorrowedFd;
 use std::path::Path;
 
@@ -130,7 +131,9 @@ pub trait Widget {
     }
 
     /// Handle high-level touch action. Returns actions for the main loop.
-    fn handle_event(&mut self, action: WidgetAction) -> Vec<MainLoopAction>;
+    fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
+        vec![]
+    }
 
     /// Whether this widget currently needs blink redraws (e.g., low battery blinking).
     fn needs_blink(&self) -> bool {
@@ -192,14 +195,14 @@ pub(crate) fn build_widget_layer(
                 WidgetConfig::Text { text } => {
                     Box::new(static_button::StaticButton::new_text(text.clone(), action, frac, color))
                 }
-                WidgetConfig::Icon { icon, theme: _ } => {
+                WidgetConfig::Icon { icon } => {
                     Box::new(static_button::StaticButton::new_icon(icon, action, frac, color))
                 }
                 WidgetConfig::Time { format, locale } => {
                     Box::new(time::TimeWidget::new(format, locale.as_deref(), frac, action, color))
                 }
-                WidgetConfig::Battery { mode } => {
-                    match battery::BatteryWidget::try_new(mode, action.clone(), frac, color) {
+                WidgetConfig::Battery => {
+                    match battery::BatteryWidget::try_new(action.clone(), frac, color) {
                         Some(bw) => Box::new(bw),
                         None => Box::new(static_button::StaticButton::new_text(
                             "Battery N/A".into(), action, frac, color,
@@ -224,7 +227,7 @@ pub(crate) fn build_widget_layer(
                 }
                 WidgetConfig::Workspaces => {
                     if let Some(ws) = ws_cfg {
-                        let mut widget = workspace::WorkspaceWidget::new(ws.provider.as_deref(), ws, frac);
+                        let mut widget = workspace::WorkspaceWidget::new(ws, frac);
                         if !widget.try_connect() {
                             eprintln!("Warning: [Workspaces] configured but could not connect (will reconnect when available)");
                         }
@@ -291,4 +294,63 @@ pub fn button_style(color: Option<(f64, f64, f64)>, active: bool) -> container::
         },
         ..Default::default()
     }
+}
+
+/// Build a styled text container with the standard widget appearance.
+/// Uses the default font size and white text color.
+pub fn styled_text_widget<'a>(
+    label: impl Into<String>,
+    ctx: &RenderContext,
+    color: Option<(f64, f64, f64)>,
+    active: bool,
+) -> Element<'a, Message, Theme, IcedRenderer> {
+    styled_text_widget_with(label, ctx, color, active, ctx.font_size, Color::WHITE)
+}
+
+/// Handle press/release key-action pattern common to widgets with key bindings.
+/// Toggles `active` state and emits `SendKeys` actions.
+pub fn handle_key_action(
+    active: &mut bool,
+    keys: &[input_linux::Key],
+    action: WidgetAction,
+) -> Vec<MainLoopAction> {
+    if keys.is_empty() {
+        return vec![];
+    }
+    match action {
+        WidgetAction::Pressed => {
+            *active = true;
+            vec![MainLoopAction::SendKeys(keys.to_vec(), true)]
+        }
+        WidgetAction::Released => {
+            *active = false;
+            vec![MainLoopAction::SendKeys(keys.to_vec(), false)]
+        }
+    }
+}
+
+/// Build a styled text container with custom font size and text color.
+pub fn styled_text_widget_with<'a>(
+    label: impl Into<String>,
+    ctx: &RenderContext,
+    color: Option<(f64, f64, f64)>,
+    active: bool,
+    font_size: f32,
+    text_color: Color,
+) -> Element<'a, Message, Theme, IcedRenderer> {
+    container(
+        text(label.into())
+            .font(ctx.font)
+            .size(font_size)
+            .color(text_color)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(2)
+    .style(move |_theme: &Theme| button_style(color, active))
+    .into()
 }

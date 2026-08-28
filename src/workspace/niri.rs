@@ -6,13 +6,14 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use crate::eventfd::{create_eventfd, drain_eventfd, signal_eventfd};
+
 struct SharedState {
     workspaces: Vec<WorkspaceInfo>,
     windows: HashMap<u64, Option<String>>,
     focused_window_id: Option<u64>,
     changed: bool,
     connected: bool,
-    reconnect_flash: bool,
 }
 
 pub struct NiriBackend {
@@ -20,33 +21,6 @@ pub struct NiriBackend {
     event_fd: OwnedFd,
     cmd_socket: Mutex<Option<Socket>>,
     reader_thread: Mutex<Option<JoinHandle<()>>>,
-}
-
-fn create_eventfd() -> OwnedFd {
-    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-    assert!(fd >= 0, "eventfd() failed");
-    unsafe { OwnedFd::from_raw_fd(fd) }
-}
-
-fn signal_eventfd(fd: &OwnedFd) {
-    let val: u64 = 1;
-    unsafe {
-        libc::write(fd.as_raw_fd(), &val as *const u64 as *const libc::c_void, 8);
-    }
-}
-
-fn signal_eventfd_raw(fd: i32) {
-    let val: u64 = 1;
-    unsafe {
-        libc::write(fd, &val as *const u64 as *const libc::c_void, 8);
-    }
-}
-
-fn drain_eventfd(fd: &OwnedFd) {
-    let mut val: u64 = 0;
-    unsafe {
-        libc::read(fd.as_raw_fd(), &mut val as *mut u64 as *mut libc::c_void, 8);
-    }
 }
 
 impl NiriBackend {
@@ -61,7 +35,6 @@ impl NiriBackend {
             focused_window_id: None,
             changed: false,
             connected: false,
-            reconnect_flash: false,
         }));
 
         Self {
@@ -145,10 +118,9 @@ impl NiriBackend {
         {
             let mut s = self.state.lock().unwrap();
             s.connected = true;
-            s.reconnect_flash = true;
             s.changed = true;
         }
-        signal_eventfd(&self.event_fd);
+        signal_eventfd(self.event_fd.as_raw_fd());
 
         // Spawn new reader thread
         let thread_state = Arc::clone(&self.state);
@@ -177,7 +149,7 @@ impl NiriBackend {
                     s.focused_window_id = None;
                     s.changed = true;
                     drop(s);
-                    signal_eventfd(&event_fd);
+                    signal_eventfd(event_fd.as_raw_fd());
                     break;
                 }
             }
@@ -255,7 +227,7 @@ impl NiriBackend {
         if changed {
             s.changed = true;
             drop(s);
-            signal_eventfd(event_fd);
+            signal_eventfd(event_fd.as_raw_fd());
         }
     }
 }
@@ -307,14 +279,5 @@ impl WorkspaceBackend for NiriBackend {
 
     fn try_connect(&self) -> bool {
         NiriBackend::try_connect(self)
-    }
-
-    fn has_reconnect_flash(&self) -> bool {
-        let mut s = self.state.lock().unwrap();
-        let flash = s.reconnect_flash;
-        if flash {
-            s.reconnect_flash = false;
-        }
-        flash
     }
 }

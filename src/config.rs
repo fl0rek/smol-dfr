@@ -23,7 +23,6 @@ fn parse_color_str(s: &str) -> Option<(f64, f64, f64)> {
 
 #[derive(Clone)]
 pub struct WorkspacesConfig {
-    pub provider: Option<String>,
     pub active_color: (f64, f64, f64),
     pub urgent_color: (f64, f64, f64),
 }
@@ -39,7 +38,6 @@ struct WorkspacesConfigProxy {
 impl From<WorkspacesConfigProxy> for WorkspacesConfig {
     fn from(p: WorkspacesConfigProxy) -> Self {
         Self {
-            provider: p.provider,
             active_color: p
                 .active_color
                 .and_then(|c| parse_color_str(&c))
@@ -144,18 +142,9 @@ where
     let opt: Option<String> = Option::deserialize(deserializer)?;
     match opt {
         None => Ok(None),
-        Some(s) => {
-            let hex = s.strip_prefix('#').unwrap_or(&s);
-            if hex.len() != 6 {
-                return Err(de::Error::custom(
-                    "Color must be 6 hex digits, e.g. \"FF8800\"",
-                ));
-            }
-            let r = u8::from_str_radix(&hex[0..2], 16).map_err(de::Error::custom)?;
-            let g = u8::from_str_radix(&hex[2..4], 16).map_err(de::Error::custom)?;
-            let b = u8::from_str_radix(&hex[4..6], 16).map_err(de::Error::custom)?;
-            Ok(Some((r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0)))
-        }
+        Some(s) => parse_color_str(&s)
+            .ok_or_else(|| de::Error::custom("Color must be 6 hex digits, e.g. \"FF8800\""))
+            .map(Some),
     }
 }
 
@@ -169,17 +158,13 @@ pub enum WidgetConfig {
     #[serde(rename_all = "PascalCase")]
     Icon {
         icon: String,
-        theme: Option<String>,
     },
     #[serde(rename_all = "PascalCase")]
     Time {
         format: String,
         locale: Option<String>,
     },
-    #[serde(rename_all = "PascalCase")]
-    Battery {
-        mode: String,
-    },
+    Battery,
     Temperature,
     #[serde(rename = "load_avg")]
     LoadAvg,

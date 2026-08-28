@@ -5,6 +5,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::eventfd::{create_eventfd, drain_eventfd, signal_eventfd};
 use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
 use pulse::context::subscribe::{Facility, InterestMaskSet};
@@ -22,7 +23,6 @@ struct SharedState {
     volume: VolumeState,
     changed: bool,
     connected: bool,
-    reconnect_flash: bool,
 }
 
 pub struct VolumeManager {
@@ -30,26 +30,6 @@ pub struct VolumeManager {
     event_fd: OwnedFd,
     thread: Mutex<Option<JoinHandle<()>>>,
     pulse_server: Option<String>,
-}
-
-fn create_eventfd() -> OwnedFd {
-    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-    assert!(fd >= 0, "eventfd() failed");
-    unsafe { OwnedFd::from_raw_fd(fd) }
-}
-
-fn signal_fd(fd: i32) {
-    let val: u64 = 1;
-    unsafe {
-        libc::write(fd, &val as *const u64 as *const libc::c_void, 8);
-    }
-}
-
-fn drain_eventfd(fd: &OwnedFd) {
-    let mut val: u64 = 0;
-    unsafe {
-        libc::read(fd.as_raw_fd(), &mut val as *mut u64 as *mut libc::c_void, 8);
-    }
 }
 
 impl VolumeManager {
@@ -65,7 +45,6 @@ impl VolumeManager {
             },
             changed: false,
             connected: false,
-            reconnect_flash: false,
         }));
 
         Self {
@@ -102,10 +81,9 @@ impl VolumeManager {
                 {
                     let mut s = self.state.lock().unwrap();
                     s.connected = true;
-                    s.reconnect_flash = true;
                     s.changed = true;
                 }
-                signal_fd(self.event_fd.as_raw_fd());
+                signal_eventfd(self.event_fd.as_raw_fd());
                 *self.thread.lock().unwrap() = Some(thread);
                 eprintln!("PulseAudio volume: connected");
                 true
@@ -136,17 +114,6 @@ impl VolumeManager {
     /// Whether the manager is currently connected to PulseAudio.
     pub fn is_connected(&self) -> bool {
         self.state.lock().unwrap().connected
-    }
-
-    /// Check and clear the reconnect flash flag.
-    /// Returns true once after a successful reconnection.
-    pub fn has_reconnect_flash(&self) -> bool {
-        let mut s = self.state.lock().unwrap();
-        let flash = s.reconnect_flash;
-        if flash {
-            s.reconnect_flash = false;
-        }
-        flash
     }
 }
 
@@ -235,7 +202,7 @@ fn run_pa_loop(
                 };
                 s.changed = true;
                 drop(s);
-                signal_fd(efd_raw);
+                signal_eventfd(efd_raw);
                 break;
             }
             _ => {}
@@ -264,7 +231,7 @@ fn query_volume(context: &Rc<RefCell<Context>>, state: &Arc<Mutex<SharedState>>,
                         s.volume.muted = sink_info.mute;
                         s.changed = true;
                         drop(s);
-                        signal_fd(efd_raw);
+                        signal_eventfd(efd_raw);
                     }
                 });
         }

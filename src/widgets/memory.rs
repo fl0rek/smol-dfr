@@ -5,9 +5,7 @@ use iced_widget::{container, text};
 use crate::memory_graph::{get_memory_usage, MemoryHistory};
 use crate::memory_graph_widget::MemoryGraphWidget;
 
-use super::{
-    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
-};
+use super::{button_style, IcedRenderer, Message, RenderContext, Widget};
 
 pub struct MemoryWidget {
     history: MemoryHistory,
@@ -82,10 +80,6 @@ impl Widget for MemoryWidget {
 
     fn width_fraction(&self) -> f64 {
         self.width_fraction
-    }
-
-    fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
-        vec![]
     }
 
     fn needs_faster_refresh(&self) -> bool {

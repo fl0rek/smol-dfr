@@ -5,9 +5,7 @@ use iced_widget::{container, mouse_area, row, text};
 use crate::config::WorkspacesConfig;
 use crate::workspace::WorkspaceManager;
 
-use super::{
-    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
-};
+use super::{button_style, IcedRenderer, Message, RenderContext, Widget};
 use std::os::fd::BorrowedFd;
 
 pub struct WorkspaceWidget {
@@ -18,9 +16,9 @@ pub struct WorkspaceWidget {
 }
 
 impl WorkspaceWidget {
-    pub fn new(provider: Option<&str>, ws_cfg: &WorkspacesConfig, width_fraction: f64) -> Self {
+    pub fn new(ws_cfg: &WorkspacesConfig, width_fraction: f64) -> Self {
         Self {
-            manager: WorkspaceManager::new(provider),
+            manager: WorkspaceManager::new(),
             active_color: ws_cfg.active_color,
             urgent_color: ws_cfg.urgent_color,
             width_fraction,
@@ -35,11 +33,6 @@ impl WorkspaceWidget {
     /// Focus a workspace by id.
     pub fn focus_workspace(&self, id: u64) {
         self.manager.focus_workspace(id);
-    }
-
-    /// Check and clear the reconnect flash flag.
-    pub fn has_reconnect_flash(&self) -> bool {
-        self.manager.has_reconnect_flash()
     }
 }
 
@@ -131,10 +124,6 @@ impl Widget for WorkspaceWidget {
 
     fn try_connect(&mut self) -> bool {
         self.manager.try_connect()
-    }
-
-    fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
-        vec![]
     }
 
     fn window_title(&self) -> Option<String> {

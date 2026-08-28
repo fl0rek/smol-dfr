@@ -2,12 +2,14 @@ use iced_core::alignment;
 use iced_core::{Color, Element, Length, Theme};
 use iced_widget::{container, text, Stack};
 use std::fs;
-use std::time::Instant;
+use std::time::Duration;
 
 use crate::battery_icon_widget::BatteryIconWidget;
+use crate::rate_limit::{LogOnce, RateLimitedValue};
 
 use super::{
-    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
+    button_style, handle_key_action, styled_text_widget_with, IcedRenderer, MainLoopAction,
+    Message, RenderContext, Widget, WidgetAction,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -130,24 +132,24 @@ pub(crate) fn get_battery_time_estimate(battery: &str, charging: bool) -> Option
     Some(format!("{}h{:02}m", h, m))
 }
 
+/// Cached battery reading: (state, time_estimate).
+type BatteryReading = (Option<(u32, BatteryState)>, Option<String>);
+
 pub struct BatteryWidget {
     battery_device: String,
     width_fraction: f64,
     action: Vec<input_linux::Key>,
     active: bool,
     color: Option<(f64, f64, f64)>,
-    battery_failed: bool,
+    log_once: LogOnce,
     last_capacity: Option<u32>,
     last_state: Option<BatteryState>,
-    cached_state: Option<(u32, BatteryState)>,
-    cached_time_estimate: Option<String>,
-    last_sysfs_read: Option<Instant>,
+    cached: RateLimitedValue<BatteryReading>,
 }
 
 impl BatteryWidget {
     /// Create a new BatteryWidget. Returns None if no battery device is found.
     pub fn try_new(
-        _battery_mode: &str,
         action: Vec<input_linux::Key>,
         width_fraction: f64,
         color: Option<(f64, f64, f64)>,
@@ -159,30 +161,14 @@ impl BatteryWidget {
             action,
             active: false,
             color,
-            battery_failed: false,
+            log_once: LogOnce::new(
+                "Warning: battery sysfs read failed, showing '--'",
+                "Battery sysfs recovered",
+            ),
             last_capacity: None,
             last_state: None,
-            cached_state: None,
-            cached_time_estimate: None,
-            last_sysfs_read: None,
+            cached: RateLimitedValue::new((None, None), Duration::from_secs(1)),
         })
-    }
-
-    /// Refresh cached battery state from sysfs if at least 1 second has elapsed.
-    fn refresh_if_needed(&mut self) {
-        let stale = match self.last_sysfs_read {
-            None => true,
-            Some(t) => t.elapsed() >= std::time::Duration::from_secs(1),
-        };
-        if stale {
-            let state = get_battery_state(&self.battery_device);
-            let charging = state
-                .map(|(_, s)| s == BatteryState::Charging)
-                .unwrap_or(false);
-            self.cached_time_estimate = get_battery_time_estimate(&self.battery_device, charging);
-            self.cached_state = state;
-            self.last_sysfs_read = Some(Instant::now());
-        }
     }
 }
 
@@ -191,38 +177,29 @@ impl Widget for BatteryWidget {
         let style_color = self.color;
         let style_active = self.active;
 
-        let state = self.cached_state;
+        let (state, time_estimate) = self.cached.get();
+        let state = *state;
 
         if ctx.show_battery_time {
             // Show time estimate text
             let charging = state
                 .map(|(_, s)| s == BatteryState::Charging)
                 .unwrap_or(false);
-            let time_text = self
-                .cached_time_estimate
-                .clone()
-                .unwrap_or_else(|| "N/A".to_string());
+            let time_text = time_estimate.clone().unwrap_or_else(|| "N/A".to_string());
             let text_color = if charging {
                 Color::from_rgb(0.3, 0.9, 0.3)
             } else {
                 Color::WHITE
             };
 
-            container(
-                text(time_text)
-                    .font(ctx.font)
-                    .size(ctx.font_size * 0.75)
-                    .color(text_color)
-                    .align_x(alignment::Horizontal::Center)
-                    .align_y(alignment::Vertical::Center)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
+            styled_text_widget_with(
+                time_text,
+                ctx,
+                style_color,
+                style_active,
+                ctx.font_size * 0.75,
+                text_color,
             )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(2)
-            .style(move |_theme: &Theme| button_style(style_color, style_active))
-            .into()
         } else {
             // Show battery icon + percentage
             match state {
@@ -258,21 +235,14 @@ impl Widget for BatteryWidget {
                 }
                 None => {
                     // Battery read failed
-                    container(
-                        text("--%")
-                            .font(ctx.font)
-                            .size(ctx.font_size * 0.75)
-                            .color(Color::WHITE)
-                            .align_x(alignment::Horizontal::Center)
-                            .align_y(alignment::Vertical::Center)
-                            .width(Length::Fill)
-                            .height(Length::Fill),
+                    styled_text_widget_with(
+                        "--%",
+                        ctx,
+                        style_color,
+                        style_active,
+                        ctx.font_size * 0.75,
+                        Color::WHITE,
                     )
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding(2)
-                    .style(move |_theme: &Theme| button_style(style_color, style_active))
-                    .into()
                 }
             }
         }
@@ -283,17 +253,18 @@ impl Widget for BatteryWidget {
     }
 
     fn update(&mut self) -> bool {
-        self.refresh_if_needed();
-        let state = self.cached_state;
-        let ok = state.is_some();
-        // Report battery failure via log-once pattern
-        if ok && self.battery_failed {
-            eprintln!("Battery sysfs recovered");
-            self.battery_failed = false;
-        } else if !ok && !self.battery_failed {
-            eprintln!("Warning: battery sysfs read failed, showing '--'");
-            self.battery_failed = true;
-        }
+        let dev = self.battery_device.clone();
+        self.cached.refresh_if_needed(|| {
+            let state = get_battery_state(&dev);
+            let charging = state
+                .map(|(_, s)| s == BatteryState::Charging)
+                .unwrap_or(false);
+            let time_estimate = get_battery_time_estimate(&dev, charging);
+            (state, time_estimate)
+        });
+        let (state, _) = self.cached.get();
+        let state = *state;
+        self.log_once.check(state.is_some());
         // Only trigger redraw when capacity or charge state actually changes
         match state {
             Some((capacity, bat_state)) => {
@@ -317,25 +288,11 @@ impl Widget for BatteryWidget {
     }
 
     fn handle_event(&mut self, action: WidgetAction) -> Vec<MainLoopAction> {
-        match action {
-            WidgetAction::Pressed => {
-                self.active = true;
-                if self.action.is_empty() {
-                    vec![MainLoopAction::ShowBatteryTime]
-                } else {
-                    let mut actions = vec![MainLoopAction::SendKeys(self.action.clone(), true)];
-                    actions.push(MainLoopAction::ShowBatteryTime);
-                    actions
-                }
-            }
-            WidgetAction::Released => {
-                self.active = false;
-                if self.action.is_empty() {
-                    vec![]
-                } else {
-                    vec![MainLoopAction::SendKeys(self.action.clone(), false)]
-                }
-            }
+        let mut actions = handle_key_action(&mut self.active, &self.action, action);
+        if matches!(action, WidgetAction::Pressed) {
+            self.active = true;
+            actions.push(MainLoopAction::ShowBatteryTime);
         }
+        actions
     }
 }

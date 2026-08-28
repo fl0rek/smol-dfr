@@ -108,12 +108,8 @@ PrimaryLayerKeys = [
     # { Time = "%H:%M %-e.%m.%Y", Action = "Time", Stretch = 2}
 
     # Example of Battery:
-    # { Battery = "percentage", Action = "Battery" }
-    # This will display a button showing the current battery percentage.
-    # { Battery = "icon", Action = "Battery" }
-    # This will display a button showing a battery icon instead of percentage.
-    # { Battery = "both", Action = "Battery" }
-    # This will display a button showing a battery icon as well as percentage.
+    # { Type = "battery", Action = "Battery" }
+    # This will display a button showing a battery icon and percentage.
     # Battery percentage is read from /sys/class/power_supply.
     # Button will turn green if battery is charging, and red if charge is <10% and is not charging.
 

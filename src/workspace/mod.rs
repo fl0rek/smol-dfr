@@ -34,10 +34,6 @@ pub(crate) trait WorkspaceBackend: Send {
     /// Attempt to connect (or reconnect) to the service.
     /// Returns true on success.
     fn try_connect(&self) -> bool;
-
-    /// Check and clear the reconnect flash flag.
-    /// Returns true once after a successful reconnection.
-    fn has_reconnect_flash(&self) -> bool;
 }
 
 pub struct WorkspaceManager {
@@ -47,8 +43,8 @@ pub struct WorkspaceManager {
 impl WorkspaceManager {
     /// Create a workspace manager. Always succeeds, starting in disconnected state.
     /// The manager will connect when `try_connect()` is called.
-    pub fn new(_provider: Option<&str>) -> Self {
-        // Niri is the only supported compositor; always create NiriBackend.
+    // TODO: support other compositors (Sway, Hyprland, etc.) — currently only Niri
+    pub fn new() -> Self {
         Self {
             backend: Box::new(niri::NiriBackend::new()),
         }
@@ -82,10 +78,5 @@ impl WorkspaceManager {
     /// Attempt to connect (or reconnect) to the service.
     pub fn try_connect(&self) -> bool {
         self.backend.try_connect()
-    }
-
-    /// Check and clear the reconnect flash flag.
-    pub fn has_reconnect_flash(&self) -> bool {
-        self.backend.has_reconnect_flash()
     }
 }

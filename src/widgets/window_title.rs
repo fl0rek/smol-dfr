@@ -1,10 +1,6 @@
-use iced_core::alignment;
-use iced_core::{Color, Element, Length, Theme};
-use iced_widget::{container, text};
+use iced_core::{Element, Theme};
 
-use super::{
-    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
-};
+use super::{styled_text_widget, IcedRenderer, Message, RenderContext, Widget};
 
 pub struct WindowTitleWidget {
     width_fraction: f64,
@@ -24,21 +20,7 @@ impl Widget for WindowTitleWidget {
     fn render(&self, ctx: &RenderContext) -> Element<'_, Message, Theme, IcedRenderer> {
         let style_color = self.color;
 
-        container(
-            text(ctx.window_title.clone())
-                .font(ctx.font)
-                .size(ctx.font_size)
-                .color(Color::WHITE)
-                .align_x(alignment::Horizontal::Center)
-                .align_y(alignment::Vertical::Center)
-                .width(Length::Fill)
-                .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(2)
-        .style(move |_theme: &Theme| button_style(style_color, false))
-        .into()
+        styled_text_widget(ctx.window_title.clone(), ctx, style_color, false)
     }
 
     fn update(&mut self) -> bool {
@@ -47,9 +29,5 @@ impl Widget for WindowTitleWidget {
 
     fn width_fraction(&self) -> f64 {
         self.width_fraction
-    }
-
-    fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
-        vec![]
     }
 }

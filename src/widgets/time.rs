@@ -2,12 +2,11 @@ use chrono::{
     format::{Item as ChronoItem, Numeric, StrftimeItems},
     Local, Locale,
 };
-use iced_core::alignment;
-use iced_core::{Color, Element, Length, Theme};
-use iced_widget::{container, text};
+use iced_core::{Element, Theme};
 
 use super::{
-    button_style, IcedRenderer, MainLoopAction, Message, RenderContext, Widget, WidgetAction,
+    handle_key_action, styled_text_widget, IcedRenderer, MainLoopAction, Message, RenderContext,
+    Widget, WidgetAction,
 };
 
 pub struct TimeWidget {
@@ -77,21 +76,8 @@ impl Widget for TimeWidget {
         let style_color = self.color;
         let style_active = self.active;
 
-        let inner: Element<'_, Message, Theme, IcedRenderer> = container(
-            text(label)
-                .font(ctx.font)
-                .size(ctx.font_size)
-                .color(Color::WHITE)
-                .align_x(alignment::Horizontal::Center)
-                .align_y(alignment::Vertical::Center)
-                .width(Length::Fill)
-                .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(2)
-        .style(move |_theme: &Theme| button_style(style_color, style_active))
-        .into();
+        let inner: Element<'_, Message, Theme, IcedRenderer> =
+            styled_text_widget(label, ctx, style_color, style_active);
 
         if self.action.is_empty() {
             inner
@@ -121,19 +107,7 @@ impl Widget for TimeWidget {
     }
 
     fn handle_event(&mut self, action: WidgetAction) -> Vec<MainLoopAction> {
-        if self.action.is_empty() {
-            return vec![];
-        }
-        match action {
-            WidgetAction::Pressed => {
-                self.active = true;
-                vec![MainLoopAction::SendKeys(self.action.clone(), true)]
-            }
-            WidgetAction::Released => {
-                self.active = false;
-                vec![MainLoopAction::SendKeys(self.action.clone(), false)]
-            }
-        }
+        handle_key_action(&mut self.active, &self.action, action)
     }
 
     fn needs_faster_refresh(&self) -> bool {
