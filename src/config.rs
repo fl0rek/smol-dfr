@@ -50,23 +50,10 @@ impl From<WorkspacesConfigProxy> for WorkspacesConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct VolumeConfig {
     pub pulse_server: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct VolumeConfigProxy {
-    pulse_server: Option<String>,
-}
-
-impl From<VolumeConfigProxy> for VolumeConfig {
-    fn from(p: VolumeConfigProxy) -> Self {
-        Self {
-            pulse_server: p.pulse_server,
-        }
-    }
 }
 
 const SHIPPED_CFG_PATH: &str = "/usr/share/smol-dfr/config.toml";
@@ -106,7 +93,7 @@ struct ConfigProxy {
     primary_layer_keys: Option<Vec<WidgetEntry>>,
     media_layer_keys: Option<Vec<WidgetEntry>>,
     workspaces: Option<WorkspacesConfigProxy>,
-    volume: Option<VolumeConfigProxy>,
+    volume: Option<VolumeConfig>,
 }
 
 fn array_or_single<'de, D>(deserializer: D) -> Result<Vec<Key>, D::Error>
@@ -320,7 +307,7 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         font_bold,
         font_italic,
         workspaces: base.workspaces.map(Into::into),
-        volume: base.volume.map(Into::into),
+        volume: base.volume,
     };
     Ok((cfg, button_layers))
 }
@@ -406,5 +393,120 @@ impl ConfigManager {
     }
     pub fn fd(&self) -> &impl AsFd {
         &self.inotify_fd
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_file(rel: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    }
+
+    /// The repo's root `config.toml` is the modern format and exercises every
+    /// part of `ConfigProxy`: globals, both layer key lists, and the
+    /// `[Workspaces]` / `[Volume]` sections.
+    #[test]
+    fn root_config_deserializes() {
+        let cfg: ConfigProxy = toml::from_str(&repo_file("config.toml"))
+            .expect("root config.toml must parse as ConfigProxy");
+
+        assert_eq!(cfg.media_layer_default, Some(false));
+        assert_eq!(cfg.show_button_outlines, Some(true));
+        assert_eq!(cfg.enable_pixel_shift, Some(false));
+        assert_eq!(cfg.font_family.as_deref(), Some("DejaVu Sans"));
+        assert_eq!(cfg.font_size, Some(25.0));
+        assert_eq!(cfg.font_style.as_deref(), Some("bold"));
+        assert_eq!(cfg.adaptive_brightness, Some(true));
+        assert_eq!(cfg.active_brightness, Some(200));
+
+        let primary = cfg.primary_layer_keys.expect("PrimaryLayerKeys present");
+        let media = cfg.media_layer_keys.expect("MediaLayerKeys present");
+        assert!(!primary.is_empty(), "PrimaryLayerKeys must be non-empty");
+        assert!(!media.is_empty(), "MediaLayerKeys must be non-empty");
+        assert!(matches!(
+            media[0].widget,
+            WidgetConfig::Icon { ref icon, .. } if icon == "brightness_low"
+        ));
+
+        let workspaces: WorkspacesConfig =
+            cfg.workspaces.expect("[Workspaces] section present").into();
+        assert_eq!(workspaces.provider.as_deref(), Some("niri"));
+        // Not set in the file, so the built-in solarized defaults apply.
+        assert_eq!(workspaces.active_color, (0.149, 0.545, 0.824));
+        assert_eq!(workspaces.urgent_color, (0.863, 0.196, 0.184));
+
+        let volume: VolumeConfig = cfg.volume.expect("[Volume] section present");
+        assert_eq!(
+            volume.pulse_server.as_deref(),
+            Some("unix:/run/user/1000/pulse/native")
+        );
+    }
+
+    /// The shipped `share/smol-dfr/config.toml` still uses the legacy layer key
+    /// format (no `Type` field), so it must fail as a full `ConfigProxy` and
+    /// fall back to the globals-only parse -- exactly what `load_config` does.
+    #[test]
+    fn shipped_config_falls_back_to_globals_only() {
+        let src = repo_file("share/smol-dfr/config.toml");
+        assert!(
+            toml::from_str::<ConfigProxy>(&src).is_err(),
+            "shipped config uses legacy layer keys; full parse is expected to fail"
+        );
+
+        let base: BaseConfigProxy =
+            toml::from_str(&src).expect("shipped config must parse as globals-only");
+        assert_eq!(base.media_layer_default, Some(false));
+        assert_eq!(base.show_button_outlines, Some(true));
+        assert_eq!(base.enable_pixel_shift, Some(false));
+        assert_eq!(base.font_family, None);
+        assert_eq!(base.adaptive_brightness, Some(true));
+        assert_eq!(base.active_brightness, Some(128));
+
+        let promoted = base.into_config_proxy();
+        assert!(promoted.primary_layer_keys.is_none());
+        assert!(promoted.media_layer_keys.is_none());
+        assert!(promoted.workspaces.is_none());
+        assert!(promoted.volume.is_none());
+    }
+
+    /// Merging a user config over the shipped globals must let every user-set
+    /// field win while unset ones fall through to the base.
+    #[test]
+    fn user_config_overrides_shipped_globals() {
+        let mut base = toml::from_str::<BaseConfigProxy>(&repo_file("share/smol-dfr/config.toml"))
+            .unwrap()
+            .into_config_proxy();
+        let user = toml::from_str::<ConfigProxy>(&repo_file("config.toml")).unwrap();
+
+        base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
+        base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
+        base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
+        base.font_family = user.font_family.or(base.font_family);
+        base.font_size = user.font_size.or(base.font_size);
+        base.font_style = user.font_style.or(base.font_style);
+        base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
+        base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
+        base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
+        base.active_brightness = user.active_brightness.or(base.active_brightness);
+        base.workspaces = user.workspaces.or(base.workspaces);
+        base.volume = user.volume.or(base.volume);
+
+        // From the user config.
+        assert_eq!(base.font_family.as_deref(), Some("DejaVu Sans"));
+        assert_eq!(base.font_size, Some(25.0));
+        assert_eq!(base.font_style.as_deref(), Some("bold"));
+        assert_eq!(base.active_brightness, Some(200));
+        assert!(base.workspaces.is_some());
+        assert!(base.volume.is_some());
+        assert!(!base.primary_layer_keys.unwrap().is_empty());
+        assert!(!base.media_layer_keys.unwrap().is_empty());
+        // Same value in both, but must survive the merge.
+        assert_eq!(base.show_button_outlines, Some(true));
+        assert_eq!(base.enable_pixel_shift, Some(false));
+        assert_eq!(base.adaptive_brightness, Some(true));
+        assert_eq!(base.media_layer_default, Some(false));
     }
 }
