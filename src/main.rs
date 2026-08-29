@@ -45,6 +45,12 @@ const TIMEOUT_MS: i32 = 10 * 1000;
 const RECONNECT_COOLDOWN_SECS: u64 = 2;
 /// Number of epoll events dequeued per `epoll.wait()` call.
 const EPOLL_EVENT_BUF: usize = 8;
+/// Name reported by the virtual uinput device.
+const UINPUT_DEV_NAME: &str = "Dynamic Function Row Virtual Input Device";
+/// Size of `uinput_setup::name`.
+const UINPUT_NAME_LEN: usize = 80;
+// The name must fit with room for the trailing NUL: `name` is a C string.
+const _: () = assert!(UINPUT_DEV_NAME.len() < UINPUT_NAME_LEN);
 
 struct Interface;
 impl LibinputInterface for Interface {
@@ -192,10 +198,12 @@ fn real_main(drm: &mut DrmBackend) {
     for k in &layer_mgr.all_key_actions() {
         uinput.set_keybit(*k).unwrap();
     }
-    let mut dev_name_c = [0 as c_char; 80];
-    let dn = "Dynamic Function Row Virtual Input Device".as_bytes();
-    for i in 0..dn.len() {
-        dev_name_c[i] = dn[i] as c_char;
+    // Zero-filled, so the copy below leaves the array NUL-terminated. `c_char` is
+    // u8 on aarch64 and i8 on x86_64, hence the per-byte cast rather than a plain
+    // `copy_from_slice`; `zip` bounds the write by the shorter of the two.
+    let mut dev_name_c = [0 as c_char; UINPUT_NAME_LEN];
+    for (dst, src) in dev_name_c.iter_mut().zip(UINPUT_DEV_NAME.as_bytes()) {
+        *dst = *src as c_char;
     }
     uinput
         .dev_setup(&uinput_setup {
