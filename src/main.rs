@@ -33,6 +33,7 @@ mod memory_graph;
 mod memory_graph_widget;
 mod rate_limit;
 mod reconnect;
+mod rotate;
 mod session_detect;
 mod volume;
 mod widgets;
