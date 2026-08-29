@@ -17,7 +17,7 @@ use std::path::Path;
 
 pub type IcedRenderer = iced_tiny_skia::Renderer;
 
-/// Shared context passed to render().
+/// Shared context passed to `render()`.
 pub struct RenderContext {
     pub font: Font,
     pub font_size: f32,
@@ -70,7 +70,7 @@ pub(crate) struct FdRegistry {
 }
 
 impl FdRegistry {
-    pub fn new(start_data: u64) -> Self {
+    pub const fn new(start_data: u64) -> Self {
         Self {
             next_data: start_data,
         }
@@ -161,7 +161,7 @@ pub trait Widget {
         true
     }
 
-    /// Return focused window title if this widget provides one (e.g. WorkspaceWidget).
+    /// Return focused window title if this widget provides one (e.g. `WorkspaceWidget`).
     fn window_title(&self) -> Option<String> {
         None
     }
@@ -178,9 +178,10 @@ pub(crate) fn build_widget_layer(
 ) -> Vec<Box<dyn Widget>> {
     use crate::config::WidgetConfig;
 
-    if entries.is_empty() {
-        panic!("Invalid configuration, layer has 0 buttons");
-    }
+    assert!(
+        !entries.is_empty(),
+        "Invalid configuration, layer has 0 buttons"
+    );
 
     let specified_total: f64 = entries.iter().filter_map(|e| e.width).sum();
     let unspecified_count = entries.iter().filter(|e| e.width.is_none()).count();
@@ -282,15 +283,12 @@ pub(crate) fn resolve_icon_path(name: &str) -> Option<String> {
 
 /// Compute the rounded-rect background style used by all widgets.
 pub fn button_style(color: Option<(f64, f64, f64)>, active: bool) -> container::Style {
-    let bg = match color {
-        Some((r, g, b)) => {
-            let scale = if active { 1.0 } else { 0.5 };
-            Color::from_rgb(r as f32 * scale, g as f32 * scale, b as f32 * scale)
-        }
-        None => {
-            let v = if active { 0.4 } else { 0.2 };
-            Color::from_rgb(v, v, v)
-        }
+    let bg = if let Some((r, g, b)) = color {
+        let scale = if active { 1.0 } else { 0.5 };
+        Color::from_rgb(r as f32 * scale, g as f32 * scale, b as f32 * scale)
+    } else {
+        let v = if active { 0.4 } else { 0.2 };
+        Color::from_rgb(v, v, v)
     };
     container::Style {
         background: Some(Background::Color(bg)),

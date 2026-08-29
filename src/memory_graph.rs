@@ -55,7 +55,7 @@ impl MemoryHistory {
     /// push the sample, and return true.
     pub fn maybe_sample(&mut self) -> bool {
         let now = Instant::now();
-        if now.duration_since(self.last_sample).as_millis() < self.sample_interval_ms as u128 {
+        if now.duration_since(self.last_sample).as_millis() < u128::from(self.sample_interval_ms) {
             return false;
         }
         self.last_sample = now;
@@ -68,15 +68,15 @@ impl MemoryHistory {
         changed
     }
 
-    pub fn samples(&self) -> &VecDeque<u32> {
+    pub const fn samples(&self) -> &VecDeque<u32> {
         &self.samples
     }
 
-    pub fn max_samples(&self) -> usize {
+    pub const fn max_samples(&self) -> usize {
         self.max_samples
     }
 
-    pub fn sample_interval_ms(&self) -> u32 {
+    pub const fn sample_interval_ms(&self) -> u32 {
         self.sample_interval_ms
     }
 }

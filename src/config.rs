@@ -18,7 +18,11 @@ fn parse_color_str(s: &str) -> Option<(f64, f64, f64)> {
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
     let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-    Some((r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0))
+    Some((
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    ))
 }
 
 #[derive(Clone)]
@@ -99,7 +103,7 @@ impl ConfigGlobals {
     /// Promote a globals-only parse to a full `ConfigProxy` with no layer
     /// keys, workspaces or volume config. Used as the fallback when the
     /// system config has old-format layer entries.
-    fn into_config_proxy(self) -> ConfigProxy {
+    const fn into_config_proxy(self) -> ConfigProxy {
         ConfigProxy {
             globals: self,
             primary_layer_keys: None,
@@ -221,17 +225,14 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     // if layer keys use old format (pre-WidgetConfig boolean-flag style).
     let sys_str = read_to_string(SHIPPED_CFG_PATH)
         .map_err(|e| format!("Failed to read shipped config at {SHIPPED_CFG_PATH}: {e}"))?;
-    let mut base = match toml::from_str::<ConfigProxy>(&sys_str) {
-        Ok(cfg) => cfg,
-        Err(_) => {
-            // Old-format system config: parse only global settings, ignore layer keys
-            eprintln!(
-                "Note: system config uses legacy format, layer keys from user config required"
-            );
-            toml::from_str::<ConfigGlobals>(&sys_str)
-                .map(ConfigGlobals::into_config_proxy)
-                .map_err(|e| format!("Failed to parse system config: {e}"))?
-        }
+    let mut base = if let Ok(cfg) = toml::from_str::<ConfigProxy>(&sys_str) {
+        cfg
+    } else {
+        // Old-format system config: parse only global settings, ignore layer keys
+        eprintln!("Note: system config uses legacy format, layer keys from user config required");
+        toml::from_str::<ConfigGlobals>(&sys_str)
+            .map(ConfigGlobals::into_config_proxy)
+            .map_err(|e| format!("Failed to parse system config: {e}"))?
     };
     let user = read_to_string(user_cfg_path())
         .map_err::<Error, _>(|e| e.into())
@@ -262,7 +263,7 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
             workspaces,
             volume,
         );
-    };
+    }
     let mut media_layer_keys = base
         .media_layer_keys
         .ok_or("missing MediaLayerKeys in config")?;
@@ -348,10 +349,10 @@ fn arm_inotify(inotify_fd: &Inotify) -> Option<WatchDescriptor> {
 }
 
 impl ConfigManager {
-    pub fn new() -> ConfigManager {
+    pub fn new() -> Self {
         let inotify_fd = Inotify::init(InitFlags::IN_NONBLOCK).unwrap();
         let watch_desc = arm_inotify(&inotify_fd);
-        ConfigManager {
+        Self {
             inotify_fd,
             watch_desc,
             had_error: false,

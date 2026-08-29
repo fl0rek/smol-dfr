@@ -50,9 +50,10 @@ impl TimeWidget {
         let faster_refresh = format_items.iter().any(|item| {
             matches!(
                 item,
-                ChronoItem::Numeric(Numeric::Second, _)
-                    | ChronoItem::Numeric(Numeric::Nanosecond, _)
-                    | ChronoItem::Numeric(Numeric::Timestamp, _)
+                ChronoItem::Numeric(
+                    Numeric::Second | Numeric::Nanosecond | Numeric::Timestamp,
+                    _
+                )
             )
         });
 
@@ -83,11 +84,11 @@ impl Widget for TimeWidget {
         let now = Local::now()
             .format_localized_with_items(self.format_items.iter(), self.locale)
             .to_string();
-        if now != self.last_formatted {
+        if now == self.last_formatted {
+            false
+        } else {
             self.last_formatted = now;
             true
-        } else {
-            false
         }
     }
 

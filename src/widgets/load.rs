@@ -22,7 +22,7 @@ pub struct LoadAvgWidget {
 }
 
 impl LoadAvgWidget {
-    pub fn new(width_fraction: f64, color: Option<(f64, f64, f64)>) -> Self {
+    pub const fn new(width_fraction: f64, color: Option<(f64, f64, f64)>) -> Self {
         Self {
             width_fraction,
             color,

@@ -21,7 +21,7 @@ fn intern_font_family(name: &str) -> &'static str {
     static INTERNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
     let mut interned = INTERNED.lock().unwrap();
     if let Some(existing) = interned.iter().find(|s| **s == name) {
-        return *existing;
+        return existing;
     }
     let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
     interned.push(leaked);
@@ -40,11 +40,11 @@ pub struct TouchbarRenderer {
     widget_tree: Option<Tree>,
     font: Font,
     font_size: f32,
-    /// Reusable pixmap buffer (logical_width × fb_height)
+    /// Reusable pixmap buffer (`logical_width` × `fb_height`)
     pixmap: Pixmap,
-    /// Reusable clip mask (logical_width × fb_height)
+    /// Reusable clip mask (`logical_width` × `fb_height`)
     clip_mask: tiny_skia::Mask,
-    /// Reusable rotation output buffer (fb_height × logical_width × 4 bytes)
+    /// Reusable rotation output buffer (`fb_height` × `logical_width` × 4 bytes)
     rotated_buf: Vec<u8>,
 }
 
@@ -96,11 +96,11 @@ impl TouchbarRenderer {
         }
     }
 
-    pub fn font(&self) -> Font {
+    pub const fn font(&self) -> Font {
         self.font
     }
 
-    pub fn font_size(&self) -> f32 {
+    pub const fn font_size(&self) -> f32 {
         self.font_size
     }
 
@@ -263,13 +263,13 @@ pub fn translate_touch(
     match te {
         input::event::touch::TouchEvent::Down(dn) => {
             let pos = iced_core::Point::new(
-                dn.x_transformed(width as u32) as f32,
-                dn.y_transformed(height as u32) as f32,
+                dn.x_transformed(u32::from(width)) as f32,
+                dn.y_transformed(u32::from(height)) as f32,
             );
             touch_positions.insert(dn.seat_slot(), pos);
             Some((
                 iced_core::Event::Touch(iced_core::touch::Event::FingerPressed {
-                    id: iced_core::touch::Finger(dn.seat_slot() as u64),
+                    id: iced_core::touch::Finger(u64::from(dn.seat_slot())),
                     position: pos,
                 }),
                 mouse::Cursor::Available(pos),
@@ -277,13 +277,13 @@ pub fn translate_touch(
         }
         input::event::touch::TouchEvent::Motion(mv) => {
             let pos = iced_core::Point::new(
-                mv.x_transformed(width as u32) as f32,
-                mv.y_transformed(height as u32) as f32,
+                mv.x_transformed(u32::from(width)) as f32,
+                mv.y_transformed(u32::from(height)) as f32,
             );
             touch_positions.insert(mv.seat_slot(), pos);
             Some((
                 iced_core::Event::Touch(iced_core::touch::Event::FingerMoved {
-                    id: iced_core::touch::Finger(mv.seat_slot() as u64),
+                    id: iced_core::touch::Finger(u64::from(mv.seat_slot())),
                     position: pos,
                 }),
                 mouse::Cursor::Available(pos),
@@ -295,7 +295,7 @@ pub fn translate_touch(
                 .unwrap_or(iced_core::Point::ORIGIN);
             Some((
                 iced_core::Event::Touch(iced_core::touch::Event::FingerLifted {
-                    id: iced_core::touch::Finger(up.seat_slot() as u64),
+                    id: iced_core::touch::Finger(u64::from(up.seat_slot())),
                     position: pos,
                 }),
                 mouse::Cursor::Available(pos),
@@ -327,10 +327,10 @@ pub fn translate_touch(
 ///
 /// Parameters:
 /// - `src_data`: premultiplied BGRA pixel data (row-major, `src_w` pixels wide)
-/// - `src_w`: source width (logical_width, the long axis)
+/// - `src_w`: source width (`logical_width`, the long axis)
 /// - `src_h`: source height (visible rows to process, may be < pixmap height)
-/// - `dst_w`: destination width after rotation (fb_height)
-/// - `dst_h`: destination height after rotation (logical_width)
+/// - `dst_w`: destination width after rotation (`fb_height`)
+/// - `dst_h`: destination height after rotation (`logical_width`)
 /// - `dst`: output buffer, must be at least `dst_w * dst_h * 4` bytes
 fn rotate_and_convert_into(
     src_data: &[u8],
@@ -366,11 +366,11 @@ fn rotate_and_convert_into(
             } else if a == 255 {
                 (blue, green, red)
             } else {
-                let a_f = a as f32 / 255.0;
+                let a_f = f32::from(a) / 255.0;
                 (
-                    (blue as f32 / a_f).min(255.0) as u8,
-                    (green as f32 / a_f).min(255.0) as u8,
-                    (red as f32 / a_f).min(255.0) as u8,
+                    (f32::from(blue) / a_f).min(255.0) as u8,
+                    (f32::from(green) / a_f).min(255.0) as u8,
+                    (f32::from(red) / a_f).min(255.0) as u8,
                 )
             };
 

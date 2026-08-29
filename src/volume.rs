@@ -30,16 +30,16 @@ struct SharedState {
 pub struct VolumeManager {
     state: Arc<Mutex<SharedState>>,
     event_fd: OwnedFd,
-    /// Poked to make the PulseAudio thread leave its mainloop and return.
+    /// Poked to make the `PulseAudio` thread leave its mainloop and return.
     shutdown_fd: OwnedFd,
     thread: Option<JoinHandle<()>>,
     pulse_server: Option<String>,
 }
 
 impl VolumeManager {
-    /// Create a new VolumeManager in disconnected state.
+    /// Create a new `VolumeManager` in disconnected state.
     /// Always succeeds -- does NOT attempt to connect.
-    /// Call `try_connect()` to establish the PulseAudio connection.
+    /// Call `try_connect()` to establish the `PulseAudio` connection.
     pub fn new(pulse_server: Option<&str>) -> Self {
         let event_fd = create_eventfd();
         let state = Arc::new(Mutex::new(SharedState {
@@ -60,7 +60,7 @@ impl VolumeManager {
         }
     }
 
-    /// Ask the PulseAudio thread to quit and wait for it. No-op when no thread
+    /// Ask the `PulseAudio` thread to quit and wait for it. No-op when no thread
     /// is running (never spawned, or already reaped by an earlier call).
     fn stop_thread(&mut self) {
         if let Some(handle) = self.thread.take() {
@@ -72,7 +72,7 @@ impl VolumeManager {
         }
     }
 
-    /// Attempt to connect to PulseAudio.
+    /// Attempt to connect to `PulseAudio`.
     /// Spawns a background thread running the PA mainloop.
     /// Returns true on successful connection, false on failure.
     pub fn try_connect(&mut self) -> bool {
@@ -100,21 +100,18 @@ impl VolumeManager {
         // server must be reaped by `stop_thread()` rather than detached.
         self.thread = Some(thread);
 
-        match rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(true) => {
-                {
-                    let mut s = self.state.lock().unwrap();
-                    s.connected = true;
-                    s.changed = true;
-                }
-                signal_eventfd(self.event_fd.as_raw_fd());
-                eprintln!("PulseAudio volume: connected");
-                true
+        if rx.recv_timeout(Duration::from_secs(3)) == Ok(true) {
+            {
+                let mut s = self.state.lock().unwrap();
+                s.connected = true;
+                s.changed = true;
             }
-            _ => {
-                eprintln!("PulseAudio volume: failed to connect");
-                false
-            }
+            signal_eventfd(self.event_fd.as_raw_fd());
+            eprintln!("PulseAudio volume: connected");
+            true
+        } else {
+            eprintln!("PulseAudio volume: failed to connect");
+            false
         }
     }
 
@@ -134,7 +131,7 @@ impl VolumeManager {
         self.event_fd.as_fd()
     }
 
-    /// Whether the manager is currently connected to PulseAudio.
+    /// Whether the manager is currently connected to `PulseAudio`.
     pub fn is_connected(&self) -> bool {
         self.state.lock().unwrap().connected
     }
@@ -153,12 +150,11 @@ fn run_pa_loop(
     shutdown_fd: OwnedFd,
     ready_tx: mpsc::SyncSender<bool>,
 ) {
-    let mut mainloop = match Mainloop::new() {
-        Some(ml) => ml,
-        None => {
-            let _ = ready_tx.send(false);
-            return;
-        }
+    let mut mainloop = if let Some(ml) = Mainloop::new() {
+        ml
+    } else {
+        let _ = ready_tx.send(false);
+        return;
     };
 
     // Register the shutdown eventfd with the mainloop so that a poke wakes it
@@ -166,26 +162,24 @@ fn run_pa_loop(
     // is still only ever touched from the thread that owns it.
     let quit = Rc::new(Cell::new(false));
     let quit_cb = Rc::clone(&quit);
-    let _shutdown_event = match mainloop.new_io_event(
+    let _shutdown_event = if let Some(ev) = mainloop.new_io_event(
         shutdown_fd.as_raw_fd(),
         IoFlagSet::INPUT,
         Box::new(move |_, _, _| quit_cb.set(true)),
     ) {
-        Some(ev) => ev,
-        None => {
-            // Without it the thread could never be joined, so refuse to run.
-            eprintln!("PulseAudio volume: failed to create shutdown event");
-            let _ = ready_tx.send(false);
-            return;
-        }
+        ev
+    } else {
+        // Without it the thread could never be joined, so refuse to run.
+        eprintln!("PulseAudio volume: failed to create shutdown event");
+        let _ = ready_tx.send(false);
+        return;
     };
 
-    let context = match Context::new(&mainloop, "smol-dfr") {
-        Some(ctx) => Rc::new(RefCell::new(ctx)),
-        None => {
-            let _ = ready_tx.send(false);
-            return;
-        }
+    let context = if let Some(ctx) = Context::new(&mainloop, "smol-dfr") {
+        Rc::new(RefCell::new(ctx))
+    } else {
+        let _ = ready_tx.send(false);
+        return;
     };
 
     if context
@@ -223,11 +217,10 @@ fn run_pa_loop(
         let st = Arc::clone(&state);
         context
             .borrow_mut()
-            .set_subscribe_callback(Some(Box::new(move |facility, _op, _idx| match facility {
-                Some(Facility::Sink) | Some(Facility::Server) => {
+            .set_subscribe_callback(Some(Box::new(move |facility, _op, _idx| {
+                if let Some(Facility::Sink | Facility::Server) = facility {
                     query_volume(&ctx, &st, efd_raw);
                 }
-                _ => {}
             })));
     }
 
@@ -287,7 +280,8 @@ fn query_volume(context: &Rc<RefCell<Context>>, state: &Arc<Mutex<SharedState>>,
                 .introspect()
                 .get_sink_info_by_name(&name, move |result| {
                     if let ListResult::Item(sink_info) = result {
-                        let vol_pct = (sink_info.volume.avg().0 as f64 / Volume::NORMAL.0 as f64
+                        let vol_pct = (f64::from(sink_info.volume.avg().0)
+                            / f64::from(Volume::NORMAL.0)
                             * 100.0)
                             .round() as u32;
                         let mut s = st.lock().unwrap();

@@ -1,6 +1,10 @@
 use chrono::{Local, Timelike};
 use drm::control::ClipRect;
-use input::event::{device::DeviceEvent, keyboard::*, Event, EventTrait};
+use input::event::{
+    device::DeviceEvent,
+    keyboard::{KeyState, KeyboardEvent, KeyboardEventTrait},
+    Event, EventTrait,
+};
 use input::{Device as InputDevice, Libinput, LibinputInterface};
 use input_linux::{uinput::UInputHandle, EventKind, Key, SynchronizeKind};
 use input_linux_sys::{input_event, input_id, timeval, uinput_setup};
@@ -125,15 +129,12 @@ fn real_main(drm: &mut DrmBackend) {
 
     // Privilege drop
     let session_user = session_detect::detect_graphical_session_user();
-    let drop_username = match &session_user {
-        Some(u) => {
-            eprintln!("Detected session user: {} (uid={})", u.username, u.uid);
-            u.username.as_str()
-        }
-        None => {
-            eprintln!("Warning: no graphical session, falling back to nobody");
-            "nobody"
-        }
+    let drop_username = if let Some(u) = &session_user {
+        eprintln!("Detected session user: {} (uid={})", u.username, u.uid);
+        u.username.as_str()
+    } else {
+        eprintln!("Warning: no graphical session, falling back to nobody");
+        "nobody"
     };
     PrivDrop::default()
         .user(drop_username)
@@ -180,9 +181,9 @@ fn real_main(drm: &mut DrmBackend) {
     let mut layer_mgr = LayerManager::new(width, &epoll);
     let cfg = layer_mgr.config();
     let mut iced_rndr = TouchbarRenderer::new(
-        width as u32,
-        height as u32,
-        db_width as u32,
+        u32::from(width),
+        u32::from(height),
+        db_width,
         &cfg.font_family,
         cfg.font_size,
         cfg.font_bold,
@@ -240,9 +241,9 @@ fn real_main(drm: &mut DrmBackend) {
         if layer_mgr.check_config_reload(&epoll) {
             let cfg = layer_mgr.config();
             iced_rndr = TouchbarRenderer::new(
-                width as u32,
-                height as u32,
-                db_width as u32,
+                u32::from(width),
+                u32::from(height),
+                db_width,
                 &cfg.font_family,
                 cfg.font_size,
                 cfg.font_bold,
@@ -308,7 +309,7 @@ fn real_main(drm: &mut DrmBackend) {
         // each re-running update()/poll() across both layers.
         let mut ep_events = [EpollEvent::empty(); EPOLL_EVENT_BUF];
         epoll
-            .wait(&mut ep_events, timeout.clamp(0, u16::MAX as i32) as u16)
+            .wait(&mut ep_events, timeout.clamp(0, i32::from(u16::MAX)) as u16)
             .unwrap_or(0);
 
         _ = udev_monitor.iter().last();
@@ -319,13 +320,11 @@ fn real_main(drm: &mut DrmBackend) {
         // Reconnection
         let re = reconnect_watcher.check_events();
         reconnect_watcher.ensure_watches();
-        if re.niri || re.pulse {
-            if layer_mgr.reconnect() {
-                needs_redraw = true;
-            }
+        if (re.niri || re.pulse) && layer_mgr.reconnect() {
+            needs_redraw = true;
         }
         if layer_mgr.any_disconnected()
-            && last_reconnect.map_or(true, |t| t.elapsed().as_secs() >= RECONNECT_COOLDOWN_SECS)
+            && last_reconnect.is_none_or(|t| t.elapsed().as_secs() >= RECONNECT_COOLDOWN_SECS)
         {
             last_reconnect = Some(Instant::now());
             if layer_mgr.reconnect() {
@@ -409,10 +408,10 @@ fn dispatch_message<F: AsRawFd>(
 ) {
     match msg {
         Message::WidgetPressed(i) => {
-            deliver_widget_action(layer_mgr, i, WidgetAction::Pressed, uinput, btu, redraw)
+            deliver_widget_action(layer_mgr, i, WidgetAction::Pressed, uinput, btu, redraw);
         }
         Message::WidgetReleased(i) => {
-            deliver_widget_action(layer_mgr, i, WidgetAction::Released, uinput, btu, redraw)
+            deliver_widget_action(layer_mgr, i, WidgetAction::Released, uinput, btu, redraw);
         }
         Message::WorkspaceDown(_) => *redraw = true,
         Message::WorkspaceUp(id) => layer_mgr.focus_workspace(id),

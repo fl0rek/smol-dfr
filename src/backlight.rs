@@ -73,7 +73,7 @@ pub struct BacklightManager {
 }
 
 impl BacklightManager {
-    pub fn new() -> BacklightManager {
+    pub fn new() -> Self {
         let (bl_path, max_bl, current_bl, bl_file) = match find_backlight() {
             Ok(path) => {
                 let max_bl = read_attr(&path, "max_brightness").unwrap_or(0);
@@ -101,7 +101,7 @@ impl BacklightManager {
             }
         };
 
-        BacklightManager {
+        Self {
             bl_file,
             bl_path,
             lid_state: SwitchState::Off,
@@ -113,16 +113,16 @@ impl BacklightManager {
         }
     }
     fn display_to_touchbar(display: u32, active_brightness: u32) -> u32 {
-        let normalized = display as f64 / MAX_DISPLAY_BRIGHTNESS as f64;
+        let normalized = f64::from(display) / f64::from(MAX_DISPLAY_BRIGHTNESS);
         // Add one so that the touch bar does not turn off
-        let adjusted = (normalized.powf(0.5) * active_brightness as f64) as u32 + 1;
+        let adjusted = (normalized.powf(0.5) * f64::from(active_brightness)) as u32 + 1;
         adjusted.min(MAX_TOUCH_BAR_BRIGHTNESS) // Clamp the value to the maximum allowed brightness
     }
     fn set_backlight(&mut self, value: u32) {
         let Some(ref mut file) = self.bl_file else {
             return;
         };
-        if let Err(e) = file.write_all(format!("{}\n", value).as_bytes()) {
+        if let Err(e) = file.write_all(format!("{value}\n").as_bytes()) {
             eprintln!("Warning: backlight write failed: {e}, attempting fd re-open");
             // Try to re-open the brightness file
             if let Some(ref bl_path) = self.bl_path {
@@ -132,7 +132,7 @@ impl BacklightManager {
                 {
                     Ok(mut new_file) => {
                         // Retry write once with new fd
-                        if let Err(e2) = new_file.write_all(format!("{}\n", value).as_bytes()) {
+                        if let Err(e2) = new_file.write_all(format!("{value}\n").as_bytes()) {
                             eprintln!("Warning: backlight retry write failed: {e2}, disabling brightness control");
                             self.bl_file = None;
                         } else {
@@ -155,7 +155,7 @@ impl BacklightManager {
                 self.last_active = Instant::now();
             }
             Event::Switch(SwitchEvent::Toggle(toggle)) => {
-                if let Some(Switch::Lid) = toggle.switch() {
+                if toggle.switch() == Some(Switch::Lid) {
                     self.lid_state = toggle.switch_state();
                     eprintln!("Lid Switch event: {:?}", self.lid_state);
                     if toggle.switch_state() == SwitchState::Off {
@@ -168,7 +168,7 @@ impl BacklightManager {
         }
     }
     /// Returns true if lid was opened since last call, clears the flag.
-    pub fn take_lid_opened(&mut self) -> bool {
+    pub const fn take_lid_opened(&mut self) -> bool {
         let val = self.lid_just_opened;
         self.lid_just_opened = false;
         val
@@ -177,7 +177,7 @@ impl BacklightManager {
         if self.bl_file.is_none() {
             return;
         }
-        let since_last_active = (Instant::now() - self.last_active).as_millis() as u64;
+        let since_last_active = self.last_active.elapsed().as_millis() as u64;
         let new_bl = min(
             self.max_bl,
             if self.lid_state == SwitchState::On {
@@ -190,9 +190,7 @@ impl BacklightManager {
                         .as_ref()
                         .and_then(|p| read_attr(p, "brightness"));
                     match display_bl {
-                        Some(bl) => {
-                            BacklightManager::display_to_touchbar(bl, cfg.active_brightness)
-                        }
+                        Some(bl) => Self::display_to_touchbar(bl, cfg.active_brightness),
                         None => cfg.active_brightness,
                     }
                 } else {
@@ -209,7 +207,7 @@ impl BacklightManager {
             self.set_backlight(self.current_bl);
         }
     }
-    pub fn current_bl(&self) -> u32 {
+    pub const fn current_bl(&self) -> u32 {
         self.current_bl
     }
 }

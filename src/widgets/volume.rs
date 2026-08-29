@@ -38,15 +38,15 @@ impl Widget for VolumeWidget {
         let style_color = self.color;
         let style_active = self.active;
 
-        let label = if !self.manager.is_connected() {
-            "Vol N/A".to_string()
-        } else {
+        let label = if self.manager.is_connected() {
             let vol = self.manager.volume();
             if vol.muted {
                 "muted".to_string()
             } else {
                 format!("{}%", vol.volume_percent)
             }
+        } else {
+            "Vol N/A".to_string()
         };
 
         let make_icon =

@@ -2,20 +2,20 @@ use nix::errno::Errno;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 use std::os::fd::{AsFd, BorrowedFd};
 
-/// Which service socket appeared during a check_events() call.
+/// Which service socket appeared during a `check_events()` call.
 #[derive(Debug, Default)]
 pub struct ReconnectEvents {
     pub niri: bool,
     pub pulse: bool,
 }
 
-/// Watches socket directories via inotify and reports when niri or PulseAudio
+/// Watches socket directories via inotify and reports when niri or `PulseAudio`
 /// sockets appear. Uses a single shared Inotify instance for efficiency.
 pub struct ReconnectWatcher {
     inotify: Inotify,
     niri_wd: Option<WatchDescriptor>,
     pulse_wd: Option<WatchDescriptor>,
-    /// Watch on xdg_runtime_dir for pulse directory creation (only if pulse_dir
+    /// Watch on `xdg_runtime_dir` for pulse directory creation (only if `pulse_dir`
     /// didn't exist at construction time).
     parent_wd: Option<WatchDescriptor>,
     niri_dir: String,
@@ -27,11 +27,11 @@ const WATCH_FLAGS: AddWatchFlags = AddWatchFlags::IN_CREATE.union(AddWatchFlags:
 const DIR_WATCH_FLAGS: AddWatchFlags = AddWatchFlags::IN_CREATE.union(AddWatchFlags::IN_ISDIR);
 
 impl ReconnectWatcher {
-    /// Create a new watcher for niri and PulseAudio socket directories.
+    /// Create a new watcher for niri and `PulseAudio` socket directories.
     ///
     /// `xdg_runtime_dir` is typically `/run/user/<uid>`.
-    /// - Niri sockets appear directly in xdg_runtime_dir as `niri.*.sock`
-    /// - PulseAudio socket appears at `<xdg_runtime_dir>/pulse/native`
+    /// - Niri sockets appear directly in `xdg_runtime_dir` as `niri.*.sock`
+    /// - `PulseAudio` socket appears at `<xdg_runtime_dir>/pulse/native`
     ///
     /// Handles missing directories gracefully (ENOENT) by deferring watch
     /// setup until the directory appears.
@@ -40,7 +40,7 @@ impl ReconnectWatcher {
             .expect("Failed to create inotify instance");
 
         let niri_dir = xdg_runtime_dir.to_string();
-        let pulse_dir = format!("{}/pulse", xdg_runtime_dir);
+        let pulse_dir = format!("{xdg_runtime_dir}/pulse");
 
         let niri_wd = add_watch_safe(&inotify, &niri_dir, WATCH_FLAGS);
         let pulse_wd = add_watch_safe(&inotify, &pulse_dir, WATCH_FLAGS);
@@ -52,7 +52,7 @@ impl ReconnectWatcher {
             None
         };
 
-        ReconnectWatcher {
+        Self {
             inotify,
             niri_wd,
             pulse_wd,
@@ -69,7 +69,7 @@ impl ReconnectWatcher {
     pub fn check_events(&mut self) -> ReconnectEvents {
         let events = match self.inotify.read_events() {
             Ok(evts) => evts,
-            Err(Errno::EAGAIN) | Err(Errno::EWOULDBLOCK) => return ReconnectEvents::default(),
+            Err(Errno::EAGAIN | Errno::EWOULDBLOCK) => return ReconnectEvents::default(),
             Err(e) => {
                 eprintln!("reconnect watcher: inotify read error: {e}");
                 return ReconnectEvents::default();
@@ -112,14 +112,12 @@ impl ReconnectWatcher {
                 if *name == *"native" {
                     result.pulse = true;
                 }
-            } else if Some(event.wd) == self.parent_wd {
-                if *name == *"pulse" {
-                    // The pulse directory was just created; add a watch on it
-                    self.pulse_wd = add_watch_safe(&self.inotify, &self.pulse_dir, WATCH_FLAGS);
-                    // Remove parent watch -- no longer needed
-                    if let Some(wd) = self.parent_wd.take() {
-                        let _ = self.inotify.rm_watch(wd);
-                    }
+            } else if Some(event.wd) == self.parent_wd && *name == *"pulse" {
+                // The pulse directory was just created; add a watch on it
+                self.pulse_wd = add_watch_safe(&self.inotify, &self.pulse_dir, WATCH_FLAGS);
+                // Remove parent watch -- no longer needed
+                if let Some(wd) = self.parent_wd.take() {
+                    let _ = self.inotify.rm_watch(wd);
                 }
             }
         }
@@ -133,7 +131,7 @@ impl ReconnectWatcher {
     }
 
     /// Re-add any missing watches. Call periodically or after handling
-    /// IN_IGNORED events to recover from deleted directories.
+    /// `IN_IGNORED` events to recover from deleted directories.
     pub fn ensure_watches(&mut self) {
         if self.niri_wd.is_none() {
             self.niri_wd = add_watch_safe(&self.inotify, &self.niri_dir, WATCH_FLAGS);

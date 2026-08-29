@@ -11,7 +11,7 @@ pub struct BatteryIconWidget {
 }
 
 impl BatteryIconWidget {
-    pub fn new(capacity: u32, charging: bool, visible: bool) -> Self {
+    pub const fn new(capacity: u32, charging: bool, visible: bool) -> Self {
         Self {
             capacity,
             charging,
@@ -19,7 +19,7 @@ impl BatteryIconWidget {
         }
     }
 
-    fn icon_color(&self) -> Color {
+    const fn icon_color(&self) -> Color {
         if self.charging {
             Color::from_rgb(0.0, 1.0, 0.0) // green
         } else if self.capacity < 15 {

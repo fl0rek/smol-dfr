@@ -38,18 +38,18 @@ pub(crate) fn find_battery_device() -> Option<String> {
 }
 
 pub(crate) fn get_battery_state(battery: &str) -> Option<(u32, BatteryState)> {
-    let status_path = format!("/sys/class/power_supply/{}/status", battery);
+    let status_path = format!("/sys/class/power_supply/{battery}/status");
     let status = fs::read_to_string(&status_path).unwrap_or_else(|_| "Unknown".to_string());
 
     let capacity = {
-        let base = format!("/sys/class/power_supply/{}", battery);
+        let base = format!("/sys/class/power_supply/{battery}");
         let from_ratio = |num_file: &str, den_file: &str| -> Option<u32> {
-            let num = fs::read_to_string(format!("{}/{}", base, num_file))
+            let num = fs::read_to_string(format!("{base}/{num_file}"))
                 .ok()?
                 .trim()
                 .parse::<f64>()
                 .ok()?;
-            let den = fs::read_to_string(format!("{}/{}", base, den_file))
+            let den = fs::read_to_string(format!("{base}/{den_file}"))
                 .ok()?
                 .trim()
                 .parse::<f64>()
@@ -60,7 +60,7 @@ pub(crate) fn get_battery_state(battery: &str) -> Option<(u32, BatteryState)> {
         from_ratio("charge_now", "charge_full")
             .or_else(|| from_ratio("energy_now", "energy_full"))
             .or_else(|| {
-                fs::read_to_string(format!("{}/capacity", base))
+                fs::read_to_string(format!("{base}/capacity"))
                     .ok()
                     .and_then(|s| s.trim().parse::<u32>().ok())
             })?
@@ -77,9 +77,9 @@ pub(crate) fn get_battery_state(battery: &str) -> Option<(u32, BatteryState)> {
 /// Returns estimated time remaining as a formatted string (e.g. "7h51m" or "1h23m").
 /// Returns None if estimation is not possible.
 pub(crate) fn get_battery_time_estimate(battery: &str, charging: bool) -> Option<String> {
-    let base = format!("/sys/class/power_supply/{}", battery);
+    let base = format!("/sys/class/power_supply/{battery}");
     let read_val = |file: &str| -> Option<f64> {
-        fs::read_to_string(format!("{}/{}", base, file))
+        fs::read_to_string(format!("{base}/{file}"))
             .ok()?
             .trim()
             .parse::<f64>()
@@ -96,7 +96,7 @@ pub(crate) fn get_battery_time_estimate(battery: &str, charging: bool) -> Option
     if let Some(secs) = time_secs {
         let h = (secs / 3600.0) as u32;
         let m = ((secs % 3600.0) / 60.0) as u32;
-        return Some(format!("{}h{:02}m", h, m));
+        return Some(format!("{h}h{m:02}m"));
     }
 
     // 2. Try energy_now / power_now
@@ -105,17 +105,16 @@ pub(crate) fn get_battery_time_estimate(battery: &str, charging: bool) -> Option
     let power_now = read_val("power_now").map(|v| v.abs());
 
     // 3. Derive energy from charge x voltage if needed
-    let (energy_now, energy_full) = match (energy_now, energy_full) {
-        (Some(en), Some(ef)) => (Some(en), Some(ef)),
-        _ => {
-            let voltage = read_val("voltage_now")?;
-            let cn = read_val("charge_now")?;
-            let cf = read_val("charge_full")?;
-            (
-                Some(cn * voltage / 1_000_000.0),
-                Some(cf * voltage / 1_000_000.0),
-            )
-        }
+    let (energy_now, energy_full) = if let (Some(en), Some(ef)) = (energy_now, energy_full) {
+        (Some(en), Some(ef))
+    } else {
+        let voltage = read_val("voltage_now")?;
+        let cn = read_val("charge_now")?;
+        let cf = read_val("charge_full")?;
+        (
+            Some(cn * voltage / 1_000_000.0),
+            Some(cf * voltage / 1_000_000.0),
+        )
     };
 
     // 4. Derive power from current x voltage if needed
@@ -128,11 +127,11 @@ pub(crate) fn get_battery_time_estimate(battery: &str, charging: bool) -> Option
     let (en, ef, pw) = (energy_now?, energy_full?, power.filter(|v| *v > 0.0)?);
     let hours = if charging { (ef - en) / pw } else { en / pw };
     let h = hours as u32;
-    let m = ((hours - h as f64) * 60.0) as u32;
-    Some(format!("{}h{:02}m", h, m))
+    let m = ((hours - f64::from(h)) * 60.0) as u32;
+    Some(format!("{h}h{m:02}m"))
 }
 
-/// Cached battery reading: (state, time_estimate).
+/// Cached battery reading: (state, `time_estimate`).
 type BatteryReading = (Option<(u32, BatteryState)>, Option<String>);
 
 pub struct BatteryWidget {
@@ -148,7 +147,7 @@ pub struct BatteryWidget {
 }
 
 impl BatteryWidget {
-    /// Create a new BatteryWidget. Returns None if no battery device is found.
+    /// Create a new `BatteryWidget`. Returns None if no battery device is found.
     pub fn try_new(
         action: Vec<input_linux::Key>,
         width_fraction: f64,
@@ -182,9 +181,7 @@ impl Widget for BatteryWidget {
 
         if ctx.show_battery_time {
             // Show time estimate text
-            let charging = state
-                .map(|(_, s)| s == BatteryState::Charging)
-                .unwrap_or(false);
+            let charging = state.is_some_and(|(_, s)| s == BatteryState::Charging);
             let time_text = time_estimate.clone().unwrap_or_else(|| "N/A".to_string());
             let text_color = if charging {
                 Color::from_rgb(0.3, 0.9, 0.3)
@@ -211,7 +208,7 @@ impl Widget for BatteryWidget {
                         true
                     };
                     let icon = BatteryIconWidget::new(capacity, charging, visible);
-                    let label_text = format!("{}%", capacity);
+                    let label_text = format!("{capacity}%");
                     let label = text(label_text)
                         .font(ctx.font)
                         .size(ctx.font_size * 0.75)
@@ -256,9 +253,7 @@ impl Widget for BatteryWidget {
         let dev = self.battery_device.clone();
         self.cached.refresh_if_needed(|| {
             let state = get_battery_state(&dev);
-            let charging = state
-                .map(|(_, s)| s == BatteryState::Charging)
-                .unwrap_or(false);
+            let charging = state.is_some_and(|(_, s)| s == BatteryState::Charging);
             let time_estimate = get_battery_time_estimate(&dev, charging);
             (state, time_estimate)
         });
@@ -266,20 +261,17 @@ impl Widget for BatteryWidget {
         let state = *state;
         self.log_once.check(state.is_some());
         // Only trigger redraw when capacity or charge state actually changes
-        match state {
-            Some((capacity, bat_state)) => {
-                let changed =
-                    self.last_capacity != Some(capacity) || self.last_state != Some(bat_state);
-                self.last_capacity = Some(capacity);
-                self.last_state = Some(bat_state);
-                changed
-            }
-            None => {
-                let was_some = self.last_capacity.is_some();
-                self.last_capacity = None;
-                self.last_state = None;
-                was_some
-            }
+        if let Some((capacity, bat_state)) = state {
+            let changed =
+                self.last_capacity != Some(capacity) || self.last_state != Some(bat_state);
+            self.last_capacity = Some(capacity);
+            self.last_state = Some(bat_state);
+            changed
+        } else {
+            let was_some = self.last_capacity.is_some();
+            self.last_capacity = None;
+            self.last_state = None;
+            was_some
         }
     }
 

@@ -22,7 +22,7 @@ pub struct StaticButton {
 }
 
 impl StaticButton {
-    pub fn new_text(
+    pub const fn new_text(
         label: String,
         action: Vec<input_linux::Key>,
         width_fraction: f64,
@@ -53,7 +53,7 @@ impl StaticButton {
         }
     }
 
-    pub fn new_spacer(width_fraction: f64, color: Option<(f64, f64, f64)>) -> Self {
+    pub const fn new_spacer(width_fraction: f64, color: Option<(f64, f64, f64)>) -> Self {
         Self {
             variant: StaticVariant::Spacer,
             width_fraction,

@@ -14,7 +14,7 @@ pub struct LayerManager {
 }
 
 impl LayerManager {
-    /// Create LayerManager: loads config, builds widgets, registers fds.
+    /// Create `LayerManager`: loads config, builds widgets, registers fds.
     pub fn new(width: u16, epoll: &Epoll) -> Self {
         let cfg_mgr = ConfigManager::new();
         let (config, widget_entries) = cfg_mgr.load_config(width).expect("Failed to load config");
@@ -48,15 +48,15 @@ impl LayerManager {
         }
     }
 
-    pub fn config(&self) -> &Config {
+    pub const fn config(&self) -> &Config {
         &self.config
     }
 
-    pub fn active_layer(&self) -> usize {
+    pub const fn active_layer(&self) -> usize {
         self.active_layer
     }
 
-    pub fn switch_layer(&mut self, layer: usize) {
+    pub const fn switch_layer(&mut self, layer: usize) {
         self.active_layer = layer;
     }
 
@@ -98,16 +98,16 @@ impl LayerManager {
         true
     }
 
-    /// Call update() on all active widgets. Returns true if any changed.
-    /// Uses fold instead of any() to avoid short-circuiting — every widget
-    /// must get its update() called (e.g. memory sampling).
+    /// Call `update()` on all active widgets. Returns true if any changed.
+    /// Uses fold instead of `any()` to avoid short-circuiting — every widget
+    /// must get its `update()` called (e.g. memory sampling).
     pub fn update(&mut self) -> bool {
         self.layers[self.active_layer]
             .iter_mut()
             .fold(false, |changed, w| w.update() || changed)
     }
 
-    /// Call poll() on ALL layers' widgets to drain their eventfds, but only
+    /// Call `poll()` on ALL layers' widgets to drain their eventfds, but only
     /// report changes from the active layer. Both layers must be drained so
     /// that stale signals don't cause unnecessary epoll wakeups.
     pub fn poll(&mut self) -> bool {

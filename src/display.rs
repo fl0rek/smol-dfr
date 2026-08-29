@@ -31,7 +31,7 @@ impl Card {
         options.read(true);
         options.write(true);
 
-        Ok(Card(options.open(path)?))
+        Ok(Self(options.open(path)?))
     }
 }
 
@@ -159,12 +159,12 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
     atomic_req.add_property(
         plane,
         find_prop_id(&card, plane, "SRC_W")?,
-        property::Value::UnsignedRange((mode.size().0 as u64) << 16),
+        property::Value::UnsignedRange(u64::from(mode.size().0) << 16),
     );
     atomic_req.add_property(
         plane,
         find_prop_id(&card, plane, "SRC_H")?,
-        property::Value::UnsignedRange((mode.size().1 as u64) << 16),
+        property::Value::UnsignedRange(u64::from(mode.size().1) << 16),
     );
     atomic_req.add_property(
         plane,
@@ -179,12 +179,12 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
     atomic_req.add_property(
         plane,
         find_prop_id(&card, plane, "CRTC_W")?,
-        property::Value::UnsignedRange(mode.size().0 as u64),
+        property::Value::UnsignedRange(u64::from(mode.size().0)),
     );
     atomic_req.add_property(
         plane,
         find_prop_id(&card, plane, "CRTC_H")?,
-        property::Value::UnsignedRange(mode.size().1 as u64),
+        property::Value::UnsignedRange(u64::from(mode.size().1)),
     );
 
     card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req)?;
@@ -200,7 +200,7 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
 }
 
 impl DrmBackend {
-    pub fn open_card() -> Result<DrmBackend> {
+    pub fn open_card() -> Result<Self> {
         let mut errors = Vec::new();
         for entry in fs::read_dir("/dev/dri/")? {
             let entry = entry?;
@@ -221,7 +221,7 @@ impl DrmBackend {
             errors.join(",\n    ")
         ))
     }
-    pub fn mode(&self) -> Mode {
+    pub const fn mode(&self) -> Mode {
         self.mode
     }
     pub fn fb_info(&self) -> Result<framebuffer::Info> {

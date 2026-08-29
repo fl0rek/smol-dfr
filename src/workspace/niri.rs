@@ -24,7 +24,7 @@ pub struct NiriBackend {
 }
 
 impl NiriBackend {
-    /// Create a new NiriBackend in disconnected state.
+    /// Create a new `NiriBackend` in disconnected state.
     /// Always succeeds -- does NOT attempt to connect.
     /// Call `try_connect()` to establish the connection.
     pub fn new() -> Self {
@@ -52,12 +52,9 @@ impl NiriBackend {
     pub fn try_connect(&mut self) -> bool {
         // Discover socket path
         let uid = unsafe { libc::getuid() };
-        let socket_path = match crate::session_detect::discover_niri_socket(uid) {
-            Some(path) => path,
-            None => {
-                eprintln!("niri workspace: no socket found for uid {uid}");
-                return false;
-            }
+        let Some(socket_path) = crate::session_detect::discover_niri_socket(uid) else {
+            eprintln!("niri workspace: no socket found for uid {uid}");
+            return false;
         };
 
         // Update env var so niri_ipc::socket::Socket::connect() finds it
@@ -275,6 +272,6 @@ impl WorkspaceBackend for NiriBackend {
     }
 
     fn try_connect(&mut self) -> bool {
-        NiriBackend::try_connect(self)
+        Self::try_connect(self)
     }
 }

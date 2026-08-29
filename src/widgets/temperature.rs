@@ -27,7 +27,7 @@ pub(crate) fn find_thermal_zone() -> Option<String> {
             } else {
                 1
             };
-            if best.as_ref().map_or(true, |(_, p)| priority > *p) {
+            if best.as_ref().is_none_or(|(_, p)| priority > *p) {
                 best = Some((name, priority));
             }
         }
@@ -36,7 +36,7 @@ pub(crate) fn find_thermal_zone() -> Option<String> {
 }
 
 pub(crate) fn get_temperature(zone: &str) -> String {
-    let path = format!("/sys/class/thermal/{}/temp", zone);
+    let path = format!("/sys/class/thermal/{zone}/temp");
     match fs::read_to_string(&path) {
         Ok(s) => match s.trim().parse::<f64>() {
             Ok(millideg) => format!("{:.0}\u{00B0}C", millideg / 1000.0),
@@ -56,7 +56,7 @@ pub struct TemperatureWidget {
 }
 
 impl TemperatureWidget {
-    /// Create a new TemperatureWidget. Returns None if no thermal zone is found.
+    /// Create a new `TemperatureWidget`. Returns None if no thermal zone is found.
     pub fn try_new(width_fraction: f64, color: Option<(f64, f64, f64)>) -> Option<Self> {
         let zone = find_thermal_zone()?;
         Some(Self {

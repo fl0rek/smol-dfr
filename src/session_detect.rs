@@ -24,7 +24,7 @@ pub fn parse_session_list(output: &str) -> Vec<String> {
 
 /// Parse `loginctl show-session <id> -p Type -p Name -p User` output.
 /// Expects `Key=Value` lines (without `--value` flag). Order-independent.
-/// Returns (session_type, username, uid) if all three properties are found.
+/// Returns (`session_type`, username, uid) if all three properties are found.
 pub fn parse_session_properties(output: &str) -> Option<(String, String, u32)> {
     let mut session_type = None;
     let mut username = None;
@@ -78,10 +78,10 @@ pub fn detect_graphical_session_user() -> Option<SessionUser> {
     None
 }
 
-/// Discover NIRI_SOCKET by finding the socket file in XDG_RUNTIME_DIR.
+/// Discover `NIRI_SOCKET` by finding the socket file in `XDG_RUNTIME_DIR`.
 /// Niri creates its socket at `$XDG_RUNTIME_DIR/niri.{display}.{pid}.sock`.
 pub fn discover_niri_socket(uid: u32) -> Option<String> {
-    let runtime_dir = format!("/run/user/{}", uid);
+    let runtime_dir = format!("/run/user/{uid}");
     let entries = std::fs::read_dir(&runtime_dir).ok()?;
     for entry in entries.flatten() {
         let name = entry.file_name();

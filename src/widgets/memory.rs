@@ -38,7 +38,7 @@ impl Widget for MemoryWidget {
             // No samples yet, show percentage text
             let usage = get_memory_usage();
             container(
-                text(format!("{}%", usage))
+                text(format!("{usage}%"))
                     .font(ctx.font)
                     .size(ctx.font_size)
                     .color(Color::WHITE)

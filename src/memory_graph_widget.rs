@@ -10,7 +10,7 @@ pub struct MemoryGraphWidget {
 }
 
 impl MemoryGraphWidget {
-    pub fn new(samples: Vec<u32>, max_columns: usize) -> Self {
+    pub const fn new(samples: Vec<u32>, max_columns: usize) -> Self {
         Self {
             samples,
             max_columns,

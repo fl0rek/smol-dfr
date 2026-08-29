@@ -9,13 +9,13 @@ pub fn create_eventfd() -> OwnedFd {
 pub fn signal_eventfd(fd: RawFd) {
     let val: u64 = 1;
     unsafe {
-        libc::write(fd, &val as *const u64 as *const libc::c_void, 8);
+        libc::write(fd, (&raw const val).cast::<libc::c_void>(), 8);
     }
 }
 
 pub fn drain_eventfd(fd: &OwnedFd) {
     let mut val: u64 = 0;
     unsafe {
-        libc::read(fd.as_raw_fd(), &mut val as *mut u64 as *mut libc::c_void, 8);
+        libc::read(fd.as_raw_fd(), (&raw mut val).cast::<libc::c_void>(), 8);
     }
 }

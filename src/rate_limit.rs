@@ -8,7 +8,7 @@ pub struct RateLimitedValue<T> {
 }
 
 impl<T> RateLimitedValue<T> {
-    pub fn new(initial: T, interval: Duration) -> Self {
+    pub const fn new(initial: T, interval: Duration) -> Self {
         Self {
             value: initial,
             last_read: None,
@@ -18,9 +18,7 @@ impl<T> RateLimitedValue<T> {
 
     /// Call `read_fn` if the cached value is stale. Returns whether a refresh occurred.
     pub fn refresh_if_needed(&mut self, read_fn: impl FnOnce() -> T) -> bool {
-        let stale = self
-            .last_read
-            .map_or(true, |t| t.elapsed() >= self.interval);
+        let stale = self.last_read.is_none_or(|t| t.elapsed() >= self.interval);
         if stale {
             self.value = read_fn();
             self.last_read = Some(Instant::now());
@@ -30,7 +28,7 @@ impl<T> RateLimitedValue<T> {
         }
     }
 
-    pub fn get(&self) -> &T {
+    pub const fn get(&self) -> &T {
         &self.value
     }
 }
@@ -44,7 +42,7 @@ pub struct LogOnce {
 }
 
 impl LogOnce {
-    pub fn new(fail_msg: &'static str, recover_msg: &'static str) -> Self {
+    pub const fn new(fail_msg: &'static str, recover_msg: &'static str) -> Self {
         Self {
             failed: false,
             fail_msg,
