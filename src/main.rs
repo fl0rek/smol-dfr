@@ -406,37 +406,12 @@ fn dispatch_message<F: AsRawFd>(
     btu: &mut Option<Instant>,
     redraw: &mut bool,
 ) {
-    let widget_action = |layer_mgr: &mut LayerManager,
-                         idx: usize,
-                         action,
-                         uinput: &mut UInputHandle<F>,
-                         btu: &mut Option<Instant>,
-                         redraw: &mut bool| {
-        let layer = layer_mgr.active_widgets_mut();
-        if idx < layer.len() {
-            let actions: Vec<_> = layer[idx].handle_event(action);
-            for a in actions {
-                match &a {
-                    MainLoopAction::SendKeys(k, p) => {
-                        toggle_keys(uinput, k, if *p { 1 } else { 0 });
-                        *redraw = true;
-                    }
-                    MainLoopAction::FocusWorkspace(id) => layer_mgr.focus_workspace(*id),
-                    MainLoopAction::TriggerRedraw => *redraw = true,
-                    MainLoopAction::ShowBatteryTime => {
-                        *btu = Some(Instant::now() + std::time::Duration::from_secs(2));
-                        *redraw = true;
-                    }
-                }
-            }
-        }
-    };
     match msg {
         Message::WidgetPressed(i) => {
-            widget_action(layer_mgr, i, WidgetAction::Pressed, uinput, btu, redraw)
+            deliver_widget_action(layer_mgr, i, WidgetAction::Pressed, uinput, btu, redraw)
         }
         Message::WidgetReleased(i) => {
-            widget_action(layer_mgr, i, WidgetAction::Released, uinput, btu, redraw)
+            deliver_widget_action(layer_mgr, i, WidgetAction::Released, uinput, btu, redraw)
         }
         Message::WorkspaceDown(_) => *redraw = true,
         Message::WorkspaceUp(id) => layer_mgr.focus_workspace(id),
@@ -449,6 +424,40 @@ fn dispatch_message<F: AsRawFd>(
         Message::VolumeUpRelease => {
             toggle_keys(uinput, &[Key::VolumeUp], 0);
             *redraw = true;
+        }
+    }
+}
+
+/// Deliver a touch action to the widget at `idx` on the active layer and apply the
+/// `MainLoopAction`s it returns. Out-of-range indices are ignored: the layer can be
+/// swapped between the touch being translated and the message being dispatched.
+fn deliver_widget_action<F: AsRawFd>(
+    layer_mgr: &mut LayerManager,
+    idx: usize,
+    action: WidgetAction,
+    uinput: &mut UInputHandle<F>,
+    btu: &mut Option<Instant>,
+    redraw: &mut bool,
+) {
+    let layer = layer_mgr.active_widgets_mut();
+    if idx >= layer.len() {
+        return;
+    }
+    // Collected before the loop so the borrow of `layer_mgr` ends: the actions
+    // below need it again.
+    let actions: Vec<_> = layer[idx].handle_event(action);
+    for a in actions {
+        match &a {
+            MainLoopAction::SendKeys(k, p) => {
+                toggle_keys(uinput, k, if *p { 1 } else { 0 });
+                *redraw = true;
+            }
+            MainLoopAction::FocusWorkspace(id) => layer_mgr.focus_workspace(*id),
+            MainLoopAction::TriggerRedraw => *redraw = true,
+            MainLoopAction::ShowBatteryTime => {
+                *btu = Some(Instant::now() + std::time::Duration::from_secs(2));
+                *redraw = true;
+            }
         }
     }
 }
