@@ -415,7 +415,6 @@ mod tests {
 
         assert_eq!(cfg.media_layer_default, Some(false));
         assert_eq!(cfg.show_button_outlines, Some(true));
-        assert_eq!(cfg.enable_pixel_shift, Some(false));
         assert_eq!(cfg.font_family.as_deref(), Some("DejaVu Sans"));
         assert_eq!(cfg.font_size, Some(25.0));
         assert_eq!(cfg.font_style.as_deref(), Some("bold"));
@@ -433,7 +432,6 @@ mod tests {
 
         let workspaces: WorkspacesConfig =
             cfg.workspaces.expect("[Workspaces] section present").into();
-        assert_eq!(workspaces.provider.as_deref(), Some("niri"));
         // Not set in the file, so the built-in solarized defaults apply.
         assert_eq!(workspaces.active_color, (0.149, 0.545, 0.824));
         assert_eq!(workspaces.urgent_color, (0.863, 0.196, 0.184));
@@ -460,7 +458,6 @@ mod tests {
             toml::from_str(&src).expect("shipped config must parse as globals-only");
         assert_eq!(base.media_layer_default, Some(false));
         assert_eq!(base.show_button_outlines, Some(true));
-        assert_eq!(base.enable_pixel_shift, Some(false));
         assert_eq!(base.font_family, None);
         assert_eq!(base.adaptive_brightness, Some(true));
         assert_eq!(base.active_brightness, Some(128));
@@ -483,7 +480,6 @@ mod tests {
 
         base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
-        base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
         base.font_family = user.font_family.or(base.font_family);
         base.font_size = user.font_size.or(base.font_size);
         base.font_style = user.font_style.or(base.font_style);
@@ -505,7 +501,6 @@ mod tests {
         assert!(!base.media_layer_keys.unwrap().is_empty());
         // Same value in both, but must survive the merge.
         assert_eq!(base.show_button_outlines, Some(true));
-        assert_eq!(base.enable_pixel_shift, Some(false));
         assert_eq!(base.adaptive_brightness, Some(true));
         assert_eq!(base.media_layer_default, Some(false));
     }
