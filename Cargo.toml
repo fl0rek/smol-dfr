@@ -63,6 +63,26 @@ unreachable = "warn"
 exit = "warn"
 indexing_slicing = "warn"
 
+# Turned off after reviewing what `clippy --fix` actually produces for them:
+# in this codebase each one trades readability for nothing.
+#
+#   suboptimal_flops - rewrites `body_w - 2.0 * outline` as
+#                      `2.0f32.mul_add(-outline, body_w)`. Harder to read, and
+#                      numerically different (FMA does not round the
+#                      intermediate). Widget layout runs a handful of times per
+#                      redraw, so there is no speed to buy.
+#   redundant_pub_crate - rewrites `pub(crate)` to `pub`. Equivalent in a binary
+#                      crate, but `pub(crate)` documents intent.
+#   bool_to_int_with_if - collapses a three-way priority into
+#                      `i32::from(!(a || b))`, which obscures what it computes.
+#   redundant_closure_for_method_calls - replaces `|v| v.to_string()` with
+#                      `std::string::ToString::to_string`, which is longer and
+#                      less obvious than the closure it removes.
+suboptimal_flops = "allow"
+redundant_pub_crate = "allow"
+bool_to_int_with_if = "allow"
+redundant_closure_for_method_calls = "allow"
+
 # Deliberately NOT enabled (all `restriction`-group, off by default):
 #
 #   as_conversions          - fires on infallible widening as well as lossy
