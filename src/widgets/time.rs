@@ -76,18 +76,7 @@ impl Widget for TimeWidget {
         let style_color = self.color;
         let style_active = self.active;
 
-        let inner: Element<'_, Message, Theme, IcedRenderer> =
-            styled_text_widget(label, ctx, style_color, style_active);
-
-        if self.action.is_empty() {
-            inner
-        } else {
-            // Wrap in mouse_area -- widget index is set by the renderer
-            // when assembling the row, so we use index 0 as placeholder.
-            // The actual index mapping happens through the renderer's
-            // process_touch_widgets which maps message index to widget index.
-            inner
-        }
+        styled_text_widget(label, ctx, style_color, style_active)
     }
 
     fn update(&mut self) -> bool {
