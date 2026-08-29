@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
@@ -10,6 +10,8 @@ use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
 use pulse::context::subscribe::{Facility, InterestMaskSet};
 use pulse::context::{Context, FlagSet as ContextFlagSet, State as ContextState};
+use pulse::mainloop::api::Mainloop as MainloopTrait;
+use pulse::mainloop::events::io::FlagSet as IoFlagSet;
 use pulse::mainloop::standard::Mainloop;
 use pulse::volume::Volume;
 
@@ -28,6 +30,8 @@ struct SharedState {
 pub struct VolumeManager {
     state: Arc<Mutex<SharedState>>,
     event_fd: OwnedFd,
+    /// Poked to make the PulseAudio thread leave its mainloop and return.
+    shutdown_fd: OwnedFd,
     thread: Mutex<Option<JoinHandle<()>>>,
     pulse_server: Option<String>,
 }
@@ -50,8 +54,24 @@ impl VolumeManager {
         Self {
             state,
             event_fd,
+            shutdown_fd: create_eventfd(),
             thread: Mutex::new(None),
             pulse_server: pulse_server.map(|s| s.to_string()),
+        }
+    }
+
+    /// Ask the PulseAudio thread to quit and wait for it. No-op when no thread
+    /// is running (never spawned, or already reaped by an earlier call).
+    fn stop_thread(&self) {
+        // Take the handle out before joining: the lock must not be held across
+        // a join.
+        let handle = self.thread.lock().unwrap().take();
+        if let Some(handle) = handle {
+            signal_eventfd(self.shutdown_fd.as_raw_fd());
+            let _ = handle.join();
+            // The thread is gone and no other one exists yet, so it is safe to
+            // clear the counter for the next connection attempt.
+            drain_eventfd(&self.shutdown_fd);
         }
     }
 
@@ -59,22 +79,29 @@ impl VolumeManager {
     /// Spawns a background thread running the PA mainloop.
     /// Returns true on successful connection, false on failure.
     pub fn try_connect(&self) -> bool {
-        // Join old thread if any
-        {
-            let mut thread_guard = self.thread.lock().unwrap();
-            if let Some(old_thread) = thread_guard.take() {
-                let _ = old_thread.join();
-            }
-        }
+        self.stop_thread();
 
         let thread_efd = unsafe { OwnedFd::from_raw_fd(libc::dup(self.event_fd.as_raw_fd())) };
+        let thread_shutdown_fd =
+            unsafe { OwnedFd::from_raw_fd(libc::dup(self.shutdown_fd.as_raw_fd())) };
         let thread_state = Arc::clone(&self.state);
         let server = self.pulse_server.clone();
         let (tx, rx) = mpsc::sync_channel(1);
 
         let thread = thread::spawn(move || {
-            run_pa_loop(server.as_deref(), thread_state, thread_efd, tx);
+            run_pa_loop(
+                server.as_deref(),
+                thread_state,
+                thread_efd,
+                thread_shutdown_fd,
+                tx,
+            );
         });
+
+        // Keep the handle whatever the outcome: a thread that failed to connect
+        // has already returned, and one that is still stuck waiting for the
+        // server must be reaped by `stop_thread()` rather than detached.
+        *self.thread.lock().unwrap() = Some(thread);
 
         match rx.recv_timeout(Duration::from_secs(3)) {
             Ok(true) => {
@@ -84,7 +111,6 @@ impl VolumeManager {
                     s.changed = true;
                 }
                 signal_eventfd(self.event_fd.as_raw_fd());
-                *self.thread.lock().unwrap() = Some(thread);
                 eprintln!("PulseAudio volume: connected");
                 true
             }
@@ -117,15 +143,41 @@ impl VolumeManager {
     }
 }
 
+impl Drop for VolumeManager {
+    fn drop(&mut self) {
+        self.stop_thread();
+    }
+}
+
 fn run_pa_loop(
     server: Option<&str>,
     state: Arc<Mutex<SharedState>>,
     event_fd: OwnedFd,
+    shutdown_fd: OwnedFd,
     ready_tx: mpsc::SyncSender<bool>,
 ) {
     let mut mainloop = match Mainloop::new() {
         Some(ml) => ml,
         None => {
+            let _ = ready_tx.send(false);
+            return;
+        }
+    };
+
+    // Register the shutdown eventfd with the mainloop so that a poke wakes it
+    // out of poll(). The callback runs on this thread, so the mainloop object
+    // is still only ever touched from the thread that owns it.
+    let quit = Rc::new(Cell::new(false));
+    let quit_cb = Rc::clone(&quit);
+    let _shutdown_event = match mainloop.new_io_event(
+        shutdown_fd.as_raw_fd(),
+        IoFlagSet::INPUT,
+        Box::new(move |_, _, _| quit_cb.set(true)),
+    ) {
+        Some(ev) => ev,
+        None => {
+            // Without it the thread could never be joined, so refuse to run.
+            eprintln!("PulseAudio volume: failed to create shutdown event");
             let _ = ready_tx.send(false);
             return;
         }
@@ -150,6 +202,10 @@ fn run_pa_loop(
 
     // Iterate until context is Ready
     loop {
+        if quit.get() {
+            let _ = ready_tx.send(false);
+            return;
+        }
         match context.borrow().get_state() {
             ContextState::Ready => break,
             ContextState::Failed | ContextState::Terminated => {
@@ -190,6 +246,11 @@ fn run_pa_loop(
     // Event loop -- iterate blocks until an event is dispatched
     loop {
         mainloop.iterate(true);
+        if quit.get() {
+            // Asked to shut down: the manager is going away, so leave the
+            // shared state alone rather than reporting a disconnect.
+            break;
+        }
         match context.borrow().get_state() {
             ContextState::Failed | ContextState::Terminated => {
                 eprintln!("PulseAudio volume: disconnected");
@@ -208,6 +269,12 @@ fn run_pa_loop(
             _ => {}
         }
     }
+
+    // The subscribe callback holds an `Rc` to the context, so the context would
+    // otherwise keep itself -- and its server connection -- alive after this
+    // thread returns. Clearing the callback breaks that cycle.
+    context.borrow_mut().set_subscribe_callback(None);
+    context.borrow_mut().disconnect();
 }
 
 fn query_volume(context: &Rc<RefCell<Context>>, state: &Arc<Mutex<SharedState>>, efd_raw: i32) {
