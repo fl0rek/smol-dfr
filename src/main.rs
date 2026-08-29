@@ -43,6 +43,8 @@ use widgets::{MainLoopAction, Message, RenderContext, WidgetAction};
 
 const TIMEOUT_MS: i32 = 10 * 1000;
 const RECONNECT_COOLDOWN_SECS: u64 = 2;
+/// Number of epoll events dequeued per `epoll.wait()` call.
+const EPOLL_EVENT_BUF: usize = 8;
 
 struct Interface;
 impl LibinputInterface for Interface {
@@ -290,8 +292,15 @@ fn real_main(drm: &mut DrmBackend) {
             needs_redraw = false;
         }
 
-        let mut ep_events = [EpollEvent::new(EpollFlags::EPOLLIN, 0)];
-        epoll.wait(&mut ep_events, timeout as u16).unwrap_or(0);
+        // Every source below (udev, widget fds, reconnect inotify, both libinput
+        // seats) is drained unconditionally after the wait, so the individual
+        // events need no inspection. A multi-slot buffer is still worth it: with
+        // a single slot, N simultaneously-ready fds cost N full loop iterations,
+        // each re-running update()/poll() across both layers.
+        let mut ep_events = [EpollEvent::empty(); EPOLL_EVENT_BUF];
+        epoll
+            .wait(&mut ep_events, timeout.clamp(0, u16::MAX as i32) as u16)
+            .unwrap_or(0);
 
         _ = udev_monitor.iter().last();
         if layer_mgr.poll() {
