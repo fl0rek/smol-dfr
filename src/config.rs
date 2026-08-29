@@ -212,6 +212,17 @@ impl BaseConfigProxy {
     }
 }
 
+/// Overlay `user.$field` onto `base.$field` for each named field, keeping the
+/// base value when the user config left the field unset. Keeps the field list
+/// in one place so adding a config key can't silently skip the merge step.
+macro_rules! merge_fields {
+    ($base:ident, $user:ident, $($field:ident),+ $(,)?) => {
+        $(
+            $base.$field = $user.$field.or($base.$field);
+        )+
+    };
+}
+
 fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     // Parse system config -- try full ConfigProxy first, fall back to globals-only
     // if layer keys use old format (pre-WidgetConfig boolean-flag style).
@@ -239,17 +250,21 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         }
     }
     if let Ok(user) = user {
-        base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
-        base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
-        base.font_family = user.font_family.or(base.font_family);
-        base.font_size = user.font_size.or(base.font_size);
-        base.font_style = user.font_style.or(base.font_style);
-        base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
-        base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
-        base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
-        base.active_brightness = user.active_brightness.or(base.active_brightness);
-        base.workspaces = user.workspaces.or(base.workspaces);
-        base.volume = user.volume.or(base.volume);
+        merge_fields!(
+            base,
+            user,
+            media_layer_default,
+            show_button_outlines,
+            font_family,
+            font_size,
+            font_style,
+            adaptive_brightness,
+            media_layer_keys,
+            primary_layer_keys,
+            active_brightness,
+            workspaces,
+            volume,
+        );
     };
     let mut media_layer_keys = base
         .media_layer_keys
@@ -478,17 +493,21 @@ mod tests {
             .into_config_proxy();
         let user = toml::from_str::<ConfigProxy>(&repo_file("config.toml")).unwrap();
 
-        base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
-        base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
-        base.font_family = user.font_family.or(base.font_family);
-        base.font_size = user.font_size.or(base.font_size);
-        base.font_style = user.font_style.or(base.font_style);
-        base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
-        base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
-        base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
-        base.active_brightness = user.active_brightness.or(base.active_brightness);
-        base.workspaces = user.workspaces.or(base.workspaces);
-        base.volume = user.volume.or(base.volume);
+        merge_fields!(
+            base,
+            user,
+            media_layer_default,
+            show_button_outlines,
+            font_family,
+            font_size,
+            font_style,
+            adaptive_brightness,
+            media_layer_keys,
+            primary_layer_keys,
+            active_brightness,
+            workspaces,
+            volume,
+        );
 
         // From the user config.
         assert_eq!(base.font_family.as_deref(), Some("DejaVu Sans"));
