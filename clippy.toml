@@ -1,0 +1,6 @@
+# Fast prototyping belongs in tests, so the panic-family lints configured in
+# Cargo.toml's [lints.clippy] are relaxed there. Production code keeps them.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

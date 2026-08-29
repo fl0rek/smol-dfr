@@ -38,3 +38,37 @@ libpulse-binding = "2.28"
 
 [profile.release]
 debug = true
+
+# Lints live here rather than in CI so that every build, every editor and
+# every agent working on this repo sees the same rules.
+#
+# Everything is `warn`, not `deny`: there is an existing backlog to burn down
+# (CODE_REVIEW.md item 36) and a red build helps nobody while that is in
+# progress. Tighten to `deny` once the count reaches zero.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# Panic discipline. smol-dfr is a privilege-dropped daemon: main() already
+# wraps real_main in catch_unwind and paints crash_bitmap.raw on the way
+# down, so the project already treats a panic as a failure mode worth
+# handling. These lints just make that belief checkable.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+panic_in_result_fn = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+exit = "warn"
+indexing_slicing = "warn"
+
+# Deliberately NOT enabled (all `restriction`-group, off by default):
+#
+#   as_conversions          - fires on infallible widening as well as lossy
+#                             narrowing; pedantic's granular cast_* lints say
+#                             the same thing with usable precision.
+#   arithmetic_side_effects - written for arithmetic that is a security
+#                             boundary; on framebuffer indices derived from a
+#                             64x2048 buffer it is noise.
+#   string_slice            - one hex-parsing site, already length-guarded.

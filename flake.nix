@@ -40,7 +40,7 @@
         in {
           default = pkgs.mkShell {
             inputsFrom = [ packages.${system}.default ];
-            packages = [ pkgs.rustfmt pkgs.rust-analyzer ];
+            packages = [ pkgs.rustfmt pkgs.clippy pkgs.rust-analyzer ];
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           };
         });
