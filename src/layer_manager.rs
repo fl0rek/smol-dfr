@@ -124,21 +124,29 @@ impl LayerManager {
         active_changed
     }
 
-    /// Attempt reconnection on disconnected active widgets. Returns true if any reconnected.
+    /// Attempt reconnection on disconnected widgets of BOTH layers, so that a
+    /// widget sitting on the inactive layer (e.g. volume with
+    /// `MediaLayerDefault = false`) recovers from a service restart without the
+    /// user having to switch layers. Only reconnections on the active layer
+    /// report a redraw, mirroring `poll()`.
     pub fn reconnect(&mut self) -> bool {
-        let mut changed = false;
-        for w in &mut self.layers[self.active_layer] {
-            if !w.is_connected() && w.try_connect() {
-                changed = true;
+        let active = self.active_layer;
+        let mut active_changed = false;
+        for (li, layer) in self.layers.iter_mut().enumerate() {
+            for w in layer.iter_mut() {
+                if !w.is_connected() && w.try_connect() && li == active {
+                    active_changed = true;
+                }
             }
         }
-        changed
+        active_changed
     }
 
-    /// Whether any active widget is disconnected.
+    /// Whether any widget on either layer is disconnected.
     pub fn any_disconnected(&self) -> bool {
-        self.layers[self.active_layer]
+        self.layers
             .iter()
+            .flat_map(|layer| layer.iter())
             .any(|w| !w.is_connected())
     }
 
