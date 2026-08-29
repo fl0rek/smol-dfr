@@ -140,9 +140,15 @@ pub trait Widget {
         false
     }
 
-    /// Whether this widget needs faster refresh (e.g., seconds display).
-    fn needs_faster_refresh(&self) -> bool {
-        false
+    /// How often this widget needs `update()` called, in milliseconds.
+    ///
+    /// `None` means the widget has no timing requirement of its own and is
+    /// content with the main loop's default timeout. The main loop shortens
+    /// its epoll timeout to the smallest interval any active widget asks for,
+    /// so a widget that samples on a schedule must report it here or it will
+    /// simply not be polled often enough.
+    fn refresh_interval_ms(&self) -> Option<u32> {
+        None
     }
 
     /// Whether the widget is currently connected/available.

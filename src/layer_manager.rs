@@ -158,10 +158,11 @@ impl LayerManager {
     }
 
     /// Whether any active widget needs faster refresh (seconds-level).
-    pub fn needs_faster_refresh(&self) -> bool {
+    pub fn min_refresh_interval_ms(&self) -> Option<u32> {
         self.layers[self.active_layer]
             .iter()
-            .any(|w| w.needs_faster_refresh())
+            .filter_map(|w| w.refresh_interval_ms())
+            .min()
     }
 
     /// Get window title from workspace widget if any.

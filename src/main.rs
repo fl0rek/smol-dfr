@@ -253,10 +253,12 @@ fn real_main(drm: &mut DrmBackend) {
 
         let now = Local::now();
         let mut timeout = min(((60 - now.second()) * 1000) as i32, TIMEOUT_MS);
-        // Shorten timeout for widgets that need faster refresh (e.g. time with seconds).
-        // The actual redraw decision comes from widget update() returning true.
-        if layer_mgr.needs_faster_refresh() {
-            timeout = min(timeout, 1000);
+        // Shorten the timeout to the fastest cadence any active widget asks for
+        // (a seconds-bearing clock, the memory graph's sample interval), so that
+        // update() is actually called often enough to honour it. The redraw
+        // decision still comes from update() returning true.
+        if let Some(ms) = layer_mgr.min_refresh_interval_ms() {
+            timeout = min(timeout, ms as i32);
         }
 
         let now_i = Instant::now();

@@ -99,7 +99,8 @@ impl Widget for TimeWidget {
         handle_key_action(&mut self.active, &self.action, action)
     }
 
-    fn needs_faster_refresh(&self) -> bool {
-        self.faster_refresh
+    fn refresh_interval_ms(&self) -> Option<u32> {
+        // Only a seconds-bearing format needs sub-minute updates.
+        self.faster_refresh.then_some(1000)
     }
 }

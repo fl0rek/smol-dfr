@@ -11,7 +11,6 @@ pub struct MemoryWidget {
     history: MemoryHistory,
     width_fraction: f64,
     color: Option<(f64, f64, f64)>,
-    active: bool,
 }
 
 impl MemoryWidget {
@@ -25,20 +24,14 @@ impl MemoryWidget {
             history: MemoryHistory::new(sample_interval_ms, graph_window_s),
             width_fraction,
             color,
-            active: false,
         }
-    }
-
-    /// Expose sample interval for main loop timeout calculation.
-    pub fn sample_interval_ms(&self) -> u32 {
-        self.history.sample_interval_ms()
     }
 }
 
 impl Widget for MemoryWidget {
     fn render(&self, ctx: &RenderContext) -> Element<'_, Message, Theme, IcedRenderer> {
         let style_color = self.color;
-        let style_active = self.active;
+        let style_active = false;
 
         let samples = self.history.samples();
         if samples.is_empty() {
@@ -82,7 +75,9 @@ impl Widget for MemoryWidget {
         self.width_fraction
     }
 
-    fn needs_faster_refresh(&self) -> bool {
-        false
+    fn refresh_interval_ms(&self) -> Option<u32> {
+        // The graph samples on a fixed schedule; without this the main loop
+        // would sleep up to TIMEOUT_MS and starve it.
+        Some(self.history.sample_interval_ms())
     }
 }
