@@ -157,7 +157,7 @@ impl BacklightManager {
             Event::Switch(SwitchEvent::Toggle(toggle)) => {
                 if let Some(Switch::Lid) = toggle.switch() {
                     self.lid_state = toggle.switch_state();
-                    println!("Lid Switch event: {:?}", self.lid_state);
+                    eprintln!("Lid Switch event: {:?}", self.lid_state);
                     if toggle.switch_state() == SwitchState::Off {
                         self.last_active = Instant::now();
                         self.lid_just_opened = true;
