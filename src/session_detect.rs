@@ -33,11 +33,11 @@ pub fn parse_session_properties(output: &str) -> Option<(String, String, u32)> {
     for line in output.lines() {
         let line = line.trim();
         if let Some(val) = line.strip_prefix("Type=") {
-            session_type = Some(val.to_string());
+            session_type = Some(val.trim().to_string());
         } else if let Some(val) = line.strip_prefix("Name=") {
-            username = Some(val.to_string());
+            username = Some(val.trim().to_string());
         } else if let Some(val) = line.strip_prefix("User=") {
-            uid = val.parse::<u32>().ok();
+            uid = val.trim().parse::<u32>().ok();
         }
     }
 
@@ -155,6 +155,18 @@ mod tests {
     #[test]
     fn test_parse_session_properties_with_extra_whitespace() {
         let output = "  Type=wayland  \n  Name=user  \n  User=1000  \n";
+        let result = parse_session_properties(output);
+        assert_eq!(
+            result,
+            Some(("wayland".to_string(), "user".to_string(), 1000))
+        );
+    }
+
+    #[test]
+    fn test_parse_session_properties_with_leading_space_in_value() {
+        // Leading whitespace right after the `=` (not just around the whole
+        // line) must also be trimmed, e.g. `Name= user`.
+        let output = "Type= wayland\nName= user\nUser= 1000\n";
         let result = parse_session_properties(output);
         assert_eq!(
             result,
