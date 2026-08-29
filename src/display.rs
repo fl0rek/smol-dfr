@@ -71,20 +71,11 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
     card.acquire_master_lock()?;
 
     let res = card.resource_handles()?;
-    let coninfo = res
+    let con = res
         .connectors()
         .iter()
         .flat_map(|con| card.get_connector(*con, true))
-        .collect::<Vec<_>>();
-    let crtcinfo = res
-        .crtcs()
-        .iter()
-        .flat_map(|crtc| card.get_crtc(*crtc))
-        .collect::<Vec<_>>();
-
-    let con = coninfo
-        .iter()
-        .find(|&i| i.state() == connector::State::Connected)
+        .find(|i| i.state() == connector::State::Connected)
         .ok_or(anyhow!("No connected connectors found"))?;
 
     let &mode = con.modes().first().ok_or(anyhow!("No modes found"))?;
@@ -92,7 +83,12 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
     if disp_height / disp_width < 30 {
         return Err(anyhow!("This does not look like a touchbar"));
     }
-    let crtc = crtcinfo.first().ok_or(anyhow!("No crtcs found"))?;
+    let crtc = res
+        .crtcs()
+        .iter()
+        .flat_map(|crtc| card.get_crtc(*crtc))
+        .next()
+        .ok_or(anyhow!("No crtcs found"))?;
     let fmt = DrmFourcc::Xrgb8888;
     let db = card.create_dumb_buffer((64, disp_height.into()), fmt, 32)?;
 
