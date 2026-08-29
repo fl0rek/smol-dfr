@@ -1,7 +1,6 @@
 use nix::errno::Errno;
 use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 use std::os::fd::{AsFd, BorrowedFd};
-use std::path::Path;
 
 /// Which service socket appeared during a check_events() call.
 #[derive(Debug, Default)]
@@ -157,9 +156,6 @@ impl ReconnectWatcher {
 /// Try to add an inotify watch, returning None on ENOENT (directory doesn't
 /// exist yet) instead of panicking.
 fn add_watch_safe(inotify: &Inotify, path: &str, flags: AddWatchFlags) -> Option<WatchDescriptor> {
-    if !Path::new(path).exists() {
-        return None;
-    }
     match inotify.add_watch(path, flags) {
         Ok(wd) => Some(wd),
         Err(Errno::ENOENT) => None,
