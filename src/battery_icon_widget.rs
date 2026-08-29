@@ -21,14 +21,11 @@ impl BatteryIconWidget {
 
     fn icon_color(&self) -> Color {
         if self.charging {
-            // Green — no R/B swap needed (R=B=0)
-            Color::from_rgb(0.0, 1.0, 0.0)
+            Color::from_rgb(0.0, 1.0, 0.0) // green
         } else if self.capacity < 15 {
-            // Red — R/B swapped for fill_quad BGRA: desired (1,0,0) → (0,0,1)
-            Color::from_rgb(0.0, 0.0, 1.0)
+            Color::from_rgb(1.0, 0.0, 0.0) // red
         } else if self.capacity < 30 {
-            // Yellow — R/B swapped: desired (1,1,0) → (0,1,1)
-            Color::from_rgb(0.0, 1.0, 1.0)
+            Color::from_rgb(1.0, 1.0, 0.0) // yellow
         } else {
             Color::from_rgb(1.0, 1.0, 1.0)
         }

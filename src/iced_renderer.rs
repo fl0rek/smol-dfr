@@ -305,14 +305,28 @@ pub fn translate_touch(
     }
 }
 
-/// Rotate 90 degrees clockwise and convert premultiplied RGBA to BGRX (XRGB8888),
-/// writing into a caller-provided buffer to avoid per-frame allocation.
+/// Rotate 90 degrees clockwise and unpremultiply into XRGB8888, writing into a
+/// caller-provided buffer to avoid per-frame allocation.
+///
+/// # Channel order
+///
+/// The channels are copied straight across, with no R/B swap. `iced_tiny_skia`
+/// already stores colours byte-swapped: every draw path builds its tiny-skia
+/// colour as `from_rgba(color.b, color.g, color.r, color.a)` — see
+/// `engine::into_color`, and the equivalents in its `text`, `raster`, `geometry`
+/// and `vector` modules — because iced's software renderer targets BGRA
+/// surfaces. So the pixmap holds B,G,R,A, and DRM's XRGB8888 wants B,G,R,X in
+/// memory on little-endian. They line up one-to-one.
+///
+/// Swapping here as well double-swaps and inverts red and blue across the whole
+/// display; that bug is why `BatteryIconWidget` and `MemoryGraphWidget` used to
+/// pre-swap their own colours to compensate.
 ///
 /// Iterates in destination-row-major order for cache-friendly sequential writes.
 /// Source pixels are premultiplied alpha; this function unpacks them before storing.
 ///
 /// Parameters:
-/// - `src_data`: premultiplied RGBA pixel data (row-major, `src_w` pixels wide)
+/// - `src_data`: premultiplied BGRA pixel data (row-major, `src_w` pixels wide)
 /// - `src_w`: source width (logical_width, the long axis)
 /// - `src_h`: source height (visible rows to process, may be < pixmap height)
 /// - `dst_w`: destination width after rotation (fb_height)
@@ -342,27 +356,27 @@ fn rotate_and_convert_into(
             let sx = dy;
 
             let src_idx = (sy * src_w + sx) * 4;
-            let r = src_data[src_idx];
-            let g = src_data[src_idx + 1];
-            let b = src_data[src_idx + 2];
+            let blue = src_data[src_idx];
+            let green = src_data[src_idx + 1];
+            let red = src_data[src_idx + 2];
             let a = src_data[src_idx + 3];
 
-            let (r, g, b) = if a == 0 {
+            let (blue, green, red) = if a == 0 {
                 (0, 0, 0)
             } else if a == 255 {
-                (r, g, b)
+                (blue, green, red)
             } else {
                 let a_f = a as f32 / 255.0;
                 (
-                    (r as f32 / a_f).min(255.0) as u8,
-                    (g as f32 / a_f).min(255.0) as u8,
-                    (b as f32 / a_f).min(255.0) as u8,
+                    (blue as f32 / a_f).min(255.0) as u8,
+                    (green as f32 / a_f).min(255.0) as u8,
+                    (red as f32 / a_f).min(255.0) as u8,
                 )
             };
 
-            dst[dst_idx] = b;
-            dst[dst_idx + 1] = g;
-            dst[dst_idx + 2] = r;
+            dst[dst_idx] = blue;
+            dst[dst_idx + 1] = green;
+            dst[dst_idx + 2] = red;
             dst[dst_idx + 3] = 0xFF;
         }
     }
@@ -422,12 +436,13 @@ fn build_widget_row<'a>(
 mod tests {
     use super::rotate_and_convert;
 
-    /// Helper: create a premultiplied RGBA pixel
-    fn px(r: u8, g: u8, b: u8, a: u8) -> [u8; 4] {
-        [r, g, b, a]
+    /// Helper: create a premultiplied BGRA pixel, matching what
+    /// `iced_tiny_skia` writes into the pixmap.
+    fn px(b: u8, g: u8, r: u8, a: u8) -> [u8; 4] {
+        [b, g, r, a]
     }
 
-    /// Build a flat RGBA buffer from a 2D array of pixels (row-major).
+    /// Build a flat BGRA buffer from a 2D array of pixels (row-major).
     fn build_src(rows: &[&[[u8; 4]]]) -> Vec<u8> {
         rows.iter()
             .flat_map(|row| row.iter().flat_map(|p| p.iter().copied()))
@@ -480,15 +495,15 @@ mod tests {
 
         // Check src(0,0) = (10,20,30) -> dst(2,0) in BGRX
         let (b, g, r, x) = read_dst(&out, 2, 0, dst_w);
-        assert_eq!((r, g, b, x), (10, 20, 30, 0xFF));
+        assert_eq!((b, g, r, x), (10, 20, 30, 0xFF));
 
         // Check src(3,2) = (73,83,93) -> dst(0, 3)
         let (b, g, r, x) = read_dst(&out, 0, 3, dst_w);
-        assert_eq!((r, g, b, x), (73, 83, 93, 0xFF));
+        assert_eq!((b, g, r, x), (73, 83, 93, 0xFF));
 
         // Check src(1,1) = (41,51,61) -> dst(1, 1)
         let (b, g, r, x) = read_dst(&out, 1, 1, dst_w);
-        assert_eq!((r, g, b, x), (41, 51, 61, 0xFF));
+        assert_eq!((b, g, r, x), (41, 51, 61, 0xFF));
     }
 
     #[test]
@@ -513,7 +528,7 @@ mod tests {
 
         let out = rotate_and_convert(&src, 1, 1, 1, 1);
         let (b, g, r, x) = read_dst(&out, 0, 0, 1);
-        assert_eq!((r, g, b, x), (200, 100, 50, 0xFF));
+        assert_eq!((b, g, r, x), (200, 100, 50, 0xFF));
     }
 
     #[test]
@@ -527,8 +542,8 @@ mod tests {
 
         let out = rotate_and_convert(&src, 1, 1, 1, 1);
         let (b, g, r, x) = read_dst(&out, 0, 0, 1);
-        assert!(r >= 254, "r should be ~255 after unpremultiply, got {r}");
-        assert_eq!((g, b, x), (0, 0, 0xFF));
+        assert!(b >= 254, "b should be ~255 after unpremultiply, got {b}");
+        assert_eq!((g, r, x), (0, 0, 0xFF));
 
         // Also test a case where unpremultiply clearly changes the value:
         // Premultiplied: r=64, g=32, b=16, a=128 -> unpacked: r=128, g=64, b=32
@@ -537,9 +552,9 @@ mod tests {
         let out2 = rotate_and_convert(&src2, 1, 1, 1, 1);
         let (b2, g2, r2, x2) = read_dst(&out2, 0, 0, 1);
         // Allow +/-1 for float rounding
-        assert!((127..=129).contains(&r2), "r should be ~128, got {r2}");
+        assert!((127..=129).contains(&b2), "b should be ~128, got {b2}");
         assert!((63..=65).contains(&g2), "g should be ~64, got {g2}");
-        assert!((31..=33).contains(&b2), "b should be ~32, got {b2}");
+        assert!((31..=33).contains(&r2), "r should be ~32, got {r2}");
         assert_eq!(x2, 0xFF);
     }
 
@@ -570,7 +585,7 @@ mod tests {
         let out = rotate_and_convert(&src, 2, 1, 3, 2);
         // dst(2, 0): sy = 3-1-2 = 0, sx = 0 -> src(0,0) visible
         let (b, g, r, x) = read_dst(&out, 2, 0, 3);
-        assert_eq!((r, g, b, x), (255, 128, 64, 0xFF));
+        assert_eq!((b, g, r, x), (255, 128, 64, 0xFF));
 
         // dst(1, 0): sy = 3-1-1 = 1, sx = 0 -> sy=1 >= src_h=1, padding -> black/zero
         let (b, g, r, x) = read_dst(&out, 1, 0, 3);

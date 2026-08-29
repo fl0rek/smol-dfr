@@ -23,9 +23,7 @@ fn value_to_color(value: u32) -> Color {
     // 0% = green (0,1,0) -> 50% = yellow (1,1,0) -> 100% = red (1,0,0)
     let r = if v <= 0.5 { v * 2.0 } else { 1.0 };
     let g = if v <= 0.5 { 1.0 } else { 1.0 - (v - 0.5) * 2.0 };
-    // tiny-skia renders fill_quad with BGRA byte order internally,
-    // so swap R and B to get correct output after XRGB8888 conversion
-    Color::from_rgb(0.0, g, r)
+    Color::from_rgb(r, g, 0.0)
 }
 
 impl<Message, Renderer> Widget<Message, Theme, Renderer> for MemoryGraphWidget
