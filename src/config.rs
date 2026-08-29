@@ -69,6 +69,7 @@ impl From<VolumeConfigProxy> for VolumeConfig {
     }
 }
 
+const SHIPPED_CFG_PATH: &str = "/usr/share/smol-dfr/config.toml";
 const LOCAL_CFG_PATH: &str = "config.toml";
 const SYSTEM_CFG_PATH: &str = "/etc/smol-dfr/config.toml";
 
@@ -227,7 +228,8 @@ impl BaseConfigProxy {
 fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     // Parse system config -- try full ConfigProxy first, fall back to globals-only
     // if layer keys use old format (pre-WidgetConfig boolean-flag style).
-    let sys_str = read_to_string("/usr/share/smol-dfr/config.toml").unwrap();
+    let sys_str = read_to_string(SHIPPED_CFG_PATH)
+        .map_err(|e| format!("Failed to read shipped config at {SHIPPED_CFG_PATH}: {e}"))?;
     let mut base = match toml::from_str::<ConfigProxy>(&sys_str) {
         Ok(cfg) => cfg,
         Err(_) => {
