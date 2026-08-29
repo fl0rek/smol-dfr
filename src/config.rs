@@ -80,9 +80,12 @@ pub struct Config {
     pub volume: Option<VolumeConfig>,
 }
 
+/// Global settings shared by the full config and the globals-only fallback
+/// (see `ConfigProxy` and its use in `load_config`). Kept as one struct so
+/// the field list is written down exactly once.
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct ConfigProxy {
+struct ConfigGlobals {
     media_layer_default: Option<bool>,
     show_button_outlines: Option<bool>,
     font_family: Option<String>,
@@ -90,6 +93,28 @@ struct ConfigProxy {
     font_style: Option<String>,
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
+}
+
+impl ConfigGlobals {
+    /// Promote a globals-only parse to a full `ConfigProxy` with no layer
+    /// keys, workspaces or volume config. Used as the fallback when the
+    /// system config has old-format layer entries.
+    fn into_config_proxy(self) -> ConfigProxy {
+        ConfigProxy {
+            globals: self,
+            primary_layer_keys: None,
+            media_layer_keys: None,
+            workspaces: None,
+            volume: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ConfigProxy {
+    #[serde(flatten)]
+    globals: ConfigGlobals,
     primary_layer_keys: Option<Vec<WidgetEntry>>,
     media_layer_keys: Option<Vec<WidgetEntry>>,
     workspaces: Option<WorkspacesConfigProxy>,
@@ -180,43 +205,11 @@ pub struct WidgetEntry {
     pub widget: WidgetConfig,
 }
 
-/// Subset proxy for parsing only global settings (no layer keys).
-/// Used as fallback when system config has old-format layer entries.
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct BaseConfigProxy {
-    media_layer_default: Option<bool>,
-    show_button_outlines: Option<bool>,
-    font_family: Option<String>,
-    font_size: Option<f64>,
-    font_style: Option<String>,
-    adaptive_brightness: Option<bool>,
-    active_brightness: Option<u32>,
-}
-
-impl BaseConfigProxy {
-    fn into_config_proxy(self) -> ConfigProxy {
-        ConfigProxy {
-            media_layer_default: self.media_layer_default,
-            show_button_outlines: self.show_button_outlines,
-            font_family: self.font_family,
-            font_size: self.font_size,
-            font_style: self.font_style,
-            adaptive_brightness: self.adaptive_brightness,
-            active_brightness: self.active_brightness,
-            primary_layer_keys: None,
-            media_layer_keys: None,
-            workspaces: None,
-            volume: None,
-        }
-    }
-}
-
 /// Overlay `user.$field` onto `base.$field` for each named field, keeping the
 /// base value when the user config left the field unset. Keeps the field list
 /// in one place so adding a config key can't silently skip the merge step.
 macro_rules! merge_fields {
-    ($base:ident, $user:ident, $($field:ident),+ $(,)?) => {
+    ($base:expr, $user:expr, $($field:ident),+ $(,)?) => {
         $(
             $base.$field = $user.$field.or($base.$field);
         )+
@@ -235,8 +228,8 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
             eprintln!(
                 "Note: system config uses legacy format, layer keys from user config required"
             );
-            toml::from_str::<BaseConfigProxy>(&sys_str)
-                .map(|b| b.into_config_proxy())
+            toml::from_str::<ConfigGlobals>(&sys_str)
+                .map(ConfigGlobals::into_config_proxy)
                 .map_err(|e| format!("Failed to parse system config: {e}"))?
         }
     };
@@ -251,17 +244,21 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     }
     if let Ok(user) = user {
         merge_fields!(
-            base,
-            user,
+            base.globals,
+            user.globals,
             media_layer_default,
             show_button_outlines,
             font_family,
             font_size,
             font_style,
             adaptive_brightness,
+            active_brightness,
+        );
+        merge_fields!(
+            base,
+            user,
             media_layer_keys,
             primary_layer_keys,
-            active_brightness,
             workspaces,
             volume,
         );
@@ -286,6 +283,7 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         }
     }
     let media_layer_default = base
+        .globals
         .media_layer_default
         .ok_or("missing MediaLayerDefault in config")?;
     let button_layers = if media_layer_default {
@@ -293,7 +291,7 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
     } else {
         [primary_layer_keys, media_layer_keys]
     };
-    let font_style = base.font_style.as_deref().unwrap_or("");
+    let font_style = base.globals.font_style.as_deref().unwrap_or("");
     let font_bold = font_style
         .split_whitespace()
         .any(|w| w.eq_ignore_ascii_case("bold"));
@@ -301,7 +299,7 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
         .split_whitespace()
         .any(|w| w.eq_ignore_ascii_case("italic"));
     // Default bold to true if no FontStyle was specified (matches the ":bold" default FontTemplate)
-    let font_bold = if base.font_style.is_none() {
+    let font_bold = if base.globals.font_style.is_none() {
         true
     } else {
         font_bold
@@ -309,16 +307,19 @@ fn load_config(width: u16) -> Result<(Config, [Vec<WidgetEntry>; 2]), String> {
 
     let cfg = Config {
         show_button_outlines: base
+            .globals
             .show_button_outlines
             .ok_or("missing ShowButtonOutlines in config")?,
         adaptive_brightness: base
+            .globals
             .adaptive_brightness
             .ok_or("missing AdaptiveBrightness in config")?,
         active_brightness: base
+            .globals
             .active_brightness
             .ok_or("missing ActiveBrightness in config")?,
-        font_family: base.font_family.unwrap_or_default(),
-        font_size: base.font_size.unwrap_or(20.0) as f32,
+        font_family: base.globals.font_family.unwrap_or_default(),
+        font_size: base.globals.font_size.unwrap_or(20.0) as f32,
         font_bold,
         font_italic,
         workspaces: base.workspaces.map(Into::into),
@@ -428,13 +429,13 @@ mod tests {
         let cfg: ConfigProxy = toml::from_str(&repo_file("config.toml"))
             .expect("root config.toml must parse as ConfigProxy");
 
-        assert_eq!(cfg.media_layer_default, Some(false));
-        assert_eq!(cfg.show_button_outlines, Some(true));
-        assert_eq!(cfg.font_family.as_deref(), Some("DejaVu Sans"));
-        assert_eq!(cfg.font_size, Some(25.0));
-        assert_eq!(cfg.font_style.as_deref(), Some("bold"));
-        assert_eq!(cfg.adaptive_brightness, Some(true));
-        assert_eq!(cfg.active_brightness, Some(200));
+        assert_eq!(cfg.globals.media_layer_default, Some(false));
+        assert_eq!(cfg.globals.show_button_outlines, Some(true));
+        assert_eq!(cfg.globals.font_family.as_deref(), Some("DejaVu Sans"));
+        assert_eq!(cfg.globals.font_size, Some(25.0));
+        assert_eq!(cfg.globals.font_style.as_deref(), Some("bold"));
+        assert_eq!(cfg.globals.adaptive_brightness, Some(true));
+        assert_eq!(cfg.globals.active_brightness, Some(200));
 
         let primary = cfg.primary_layer_keys.expect("PrimaryLayerKeys present");
         let media = cfg.media_layer_keys.expect("MediaLayerKeys present");
@@ -469,7 +470,7 @@ mod tests {
             "shipped config uses legacy layer keys; full parse is expected to fail"
         );
 
-        let base: BaseConfigProxy =
+        let base: ConfigGlobals =
             toml::from_str(&src).expect("shipped config must parse as globals-only");
         assert_eq!(base.media_layer_default, Some(false));
         assert_eq!(base.show_button_outlines, Some(true));
@@ -488,39 +489,43 @@ mod tests {
     /// field win while unset ones fall through to the base.
     #[test]
     fn user_config_overrides_shipped_globals() {
-        let mut base = toml::from_str::<BaseConfigProxy>(&repo_file("share/smol-dfr/config.toml"))
+        let mut base = toml::from_str::<ConfigGlobals>(&repo_file("share/smol-dfr/config.toml"))
             .unwrap()
             .into_config_proxy();
         let user = toml::from_str::<ConfigProxy>(&repo_file("config.toml")).unwrap();
 
         merge_fields!(
-            base,
-            user,
+            base.globals,
+            user.globals,
             media_layer_default,
             show_button_outlines,
             font_family,
             font_size,
             font_style,
             adaptive_brightness,
+            active_brightness,
+        );
+        merge_fields!(
+            base,
+            user,
             media_layer_keys,
             primary_layer_keys,
-            active_brightness,
             workspaces,
             volume,
         );
 
         // From the user config.
-        assert_eq!(base.font_family.as_deref(), Some("DejaVu Sans"));
-        assert_eq!(base.font_size, Some(25.0));
-        assert_eq!(base.font_style.as_deref(), Some("bold"));
-        assert_eq!(base.active_brightness, Some(200));
+        assert_eq!(base.globals.font_family.as_deref(), Some("DejaVu Sans"));
+        assert_eq!(base.globals.font_size, Some(25.0));
+        assert_eq!(base.globals.font_style.as_deref(), Some("bold"));
+        assert_eq!(base.globals.active_brightness, Some(200));
         assert!(base.workspaces.is_some());
         assert!(base.volume.is_some());
         assert!(!base.primary_layer_keys.unwrap().is_empty());
         assert!(!base.media_layer_keys.unwrap().is_empty());
         // Same value in both, but must survive the merge.
-        assert_eq!(base.show_button_outlines, Some(true));
-        assert_eq!(base.adaptive_brightness, Some(true));
-        assert_eq!(base.media_layer_default, Some(false));
+        assert_eq!(base.globals.show_button_outlines, Some(true));
+        assert_eq!(base.globals.adaptive_brightness, Some(true));
+        assert_eq!(base.globals.media_layer_default, Some(false));
     }
 }
