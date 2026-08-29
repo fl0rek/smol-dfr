@@ -20,7 +20,7 @@ pub struct NiriBackend {
     state: Arc<Mutex<SharedState>>,
     event_fd: OwnedFd,
     cmd_socket: Mutex<Option<Socket>>,
-    reader_thread: Mutex<Option<JoinHandle<()>>>,
+    reader_thread: Option<JoinHandle<()>>,
 }
 
 impl NiriBackend {
@@ -41,7 +41,7 @@ impl NiriBackend {
             state,
             event_fd,
             cmd_socket: Mutex::new(None),
-            reader_thread: Mutex::new(None),
+            reader_thread: None,
         }
     }
 
@@ -49,7 +49,7 @@ impl NiriBackend {
     /// Re-discovers the socket path, establishes event and command connections,
     /// spawns the reader thread.
     /// Returns true on success, false on failure (logged to stderr).
-    pub fn try_connect(&self) -> bool {
+    pub fn try_connect(&mut self) -> bool {
         // Discover socket path
         let uid = unsafe { libc::getuid() };
         let socket_path = match crate::session_detect::discover_niri_socket(uid) {
@@ -104,11 +104,8 @@ impl NiriBackend {
         *self.cmd_socket.lock().unwrap() = Some(cmd_socket);
 
         // Join old reader thread if any
-        {
-            let mut thread_guard = self.reader_thread.lock().unwrap();
-            if let Some(old_thread) = thread_guard.take() {
-                let _ = old_thread.join();
-            }
+        if let Some(old_thread) = self.reader_thread.take() {
+            let _ = old_thread.join();
         }
 
         // Dup eventfd for the new thread
@@ -128,7 +125,7 @@ impl NiriBackend {
             Self::event_reader(event_socket, thread_state, thread_event_fd);
         });
 
-        *self.reader_thread.lock().unwrap() = Some(reader_thread);
+        self.reader_thread = Some(reader_thread);
 
         eprintln!("niri workspace: connected");
         true
@@ -277,7 +274,7 @@ impl WorkspaceBackend for NiriBackend {
         self.state.lock().unwrap().connected
     }
 
-    fn try_connect(&self) -> bool {
+    fn try_connect(&mut self) -> bool {
         NiriBackend::try_connect(self)
     }
 }

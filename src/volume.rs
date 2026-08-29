@@ -32,7 +32,7 @@ pub struct VolumeManager {
     event_fd: OwnedFd,
     /// Poked to make the PulseAudio thread leave its mainloop and return.
     shutdown_fd: OwnedFd,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    thread: Option<JoinHandle<()>>,
     pulse_server: Option<String>,
 }
 
@@ -55,18 +55,15 @@ impl VolumeManager {
             state,
             event_fd,
             shutdown_fd: create_eventfd(),
-            thread: Mutex::new(None),
+            thread: None,
             pulse_server: pulse_server.map(|s| s.to_string()),
         }
     }
 
     /// Ask the PulseAudio thread to quit and wait for it. No-op when no thread
     /// is running (never spawned, or already reaped by an earlier call).
-    fn stop_thread(&self) {
-        // Take the handle out before joining: the lock must not be held across
-        // a join.
-        let handle = self.thread.lock().unwrap().take();
-        if let Some(handle) = handle {
+    fn stop_thread(&mut self) {
+        if let Some(handle) = self.thread.take() {
             signal_eventfd(self.shutdown_fd.as_raw_fd());
             let _ = handle.join();
             // The thread is gone and no other one exists yet, so it is safe to
@@ -78,7 +75,7 @@ impl VolumeManager {
     /// Attempt to connect to PulseAudio.
     /// Spawns a background thread running the PA mainloop.
     /// Returns true on successful connection, false on failure.
-    pub fn try_connect(&self) -> bool {
+    pub fn try_connect(&mut self) -> bool {
         self.stop_thread();
 
         let thread_efd = unsafe { OwnedFd::from_raw_fd(libc::dup(self.event_fd.as_raw_fd())) };
@@ -101,7 +98,7 @@ impl VolumeManager {
         // Keep the handle whatever the outcome: a thread that failed to connect
         // has already returned, and one that is still stuck waiting for the
         // server must be reaped by `stop_thread()` rather than detached.
-        *self.thread.lock().unwrap() = Some(thread);
+        self.thread = Some(thread);
 
         match rx.recv_timeout(Duration::from_secs(3)) {
             Ok(true) => {
