@@ -40,13 +40,33 @@ pub struct DrmBackend {
     mode: Mode,
     db: DumbBuffer,
     fb: framebuffer::Handle,
+    /// Write mapping of `db`, held for the lifetime of the backend so redraws do
+    /// not re-issue `DRM_IOCTL_MODE_MAP_DUMB` + `mmap` + `munmap` every frame.
+    /// `Some` until `drop` unmaps it. See `map_persistent_buffer`.
+    mapping: Option<DumbMapping<'static>>,
 }
 
 impl Drop for DrmBackend {
     fn drop(&mut self) {
+        // Unmap before the buffer is destroyed.
+        self.mapping.take();
         self.card.destroy_framebuffer(self.fb).unwrap();
         self.card.destroy_dumb_buffer(self.db).unwrap();
     }
+}
+
+/// Map `db` for writing, with the mapping detached from `db`'s lifetime.
+///
+/// `Device::map_dumb_buffer` borrows the `DumbBuffer` for as long as the returned
+/// `DumbMapping<'a>` lives, so storing the mapping beside the buffer it came from
+/// would be self-referential and safe Rust rejects it. The borrow is nominal: the
+/// mapping only holds `PhantomData<&'a ()>` plus a slice built from the `mmap`
+/// pointer, and the call reads nothing from the buffer but its handle and length.
+/// `DumbBuffer` is `Copy` and has no destructor, so leaking a copy yields a
+/// `'static` mapping at the cost of 24 bytes, once, for a value that lives as long
+/// as the process.
+fn map_persistent_buffer(card: &Card, db: DumbBuffer) -> Result<DumbMapping<'static>> {
+    Ok(card.map_dumb_buffer(Box::leak(Box::new(db)))?)
 }
 
 fn find_prop_id<T: ResourceHandle>(
@@ -169,7 +189,14 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
 
     card.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, atomic_req)?;
 
-    Ok(DrmBackend { card, mode, db, fb })
+    let mapping = Some(map_persistent_buffer(&card, db)?);
+    Ok(DrmBackend {
+        card,
+        mode,
+        db,
+        fb,
+        mapping,
+    })
 }
 
 impl DrmBackend {
@@ -203,7 +230,12 @@ impl DrmBackend {
     pub fn dirty(&self, clips: &[ClipRect]) -> Result<()> {
         Ok(self.card.dirty_framebuffer(self.fb, clips)?)
     }
-    pub fn map(&mut self) -> Result<DumbMapping> {
-        Ok(self.card.map_dumb_buffer(&mut self.db)?)
+    /// The framebuffer's pixels. The mapping is created once and kept, so this is
+    /// just a slice hand-out — no ioctl, no `mmap`.
+    pub fn map(&mut self) -> &mut [u8] {
+        self.mapping
+            .as_mut()
+            .expect("mapping is only taken in drop")
+            .as_mut()
     }
 }

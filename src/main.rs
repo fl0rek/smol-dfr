@@ -103,15 +103,14 @@ fn main() {
     let (height, width) = drm.mode().size();
     let _ = panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm)));
     let (crash, mut wptr) = (include_bytes!("crash_bitmap.raw"), 0usize);
-    let mut map = drm.map().unwrap();
+    let map = drm.map();
     for byte in crash {
         for i in 0..8 {
             let c = if ((byte >> i) & 1) == 0 { 0xFF } else { 0x0 };
-            map.as_mut()[wptr..wptr + 4].fill(c);
+            map[wptr..wptr + 4].fill(c);
             wptr += 4;
         }
     }
-    drop(map);
     drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
     let mut ss = SigSet::empty();
     ss.add(Signal::SIGTERM);
@@ -295,7 +294,7 @@ fn real_main(drm: &mut DrmBackend) {
                 window_title: layer_mgr.window_title(),
             };
             let buf = iced_rndr.render_widgets(layer_mgr.active_widgets(), &ctx);
-            drm.map().unwrap().as_mut()[..buf.len()].copy_from_slice(buf);
+            drm.map()[..buf.len()].copy_from_slice(buf);
             drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
             needs_redraw = false;
         }
