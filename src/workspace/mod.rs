@@ -33,7 +33,7 @@ pub(crate) trait WorkspaceBackend: Send {
 
     /// Attempt to connect (or reconnect) to the service.
     /// Returns true on success.
-    fn try_connect(&self) -> bool;
+    fn try_connect(&mut self) -> bool;
 }
 
 pub struct WorkspaceManager {
@@ -76,7 +76,7 @@ impl WorkspaceManager {
     }
 
     /// Attempt to connect (or reconnect) to the service.
-    pub fn try_connect(&self) -> bool {
+    pub fn try_connect(&mut self) -> bool {
         self.backend.try_connect()
     }
 }
