@@ -2,242 +2,207 @@
 
 Post-rewrite cleanup audit. Each issue is independent and can be addressed one-by-one.
 
----
-
-## 1. Duplicated `eventfd` / `signal_fd` / `drain_eventfd` Helpers
-
-**Files:** `src/volume.rs:34-53`, `src/workspace/niri.rs:24-50`
-
-Both modules define identical `create_eventfd()`, `signal_fd()`/`signal_eventfd()`, and `drain_eventfd()` functions. The niri module has *three* variants: `signal_eventfd(&OwnedFd)`, `signal_eventfd_raw(i32)`, and `drain_eventfd(&OwnedFd)`.
-
-**Fix:** Extract a shared `eventfd` utility module. Consolidate `signal_eventfd` and `signal_eventfd_raw` into one function.
-DONE
-
----
-
-## 2. Duplicated Hex Color Parsing
-
-**Files:** `src/config.rs:13-22` (`parse_color_str`) and `src/config.rs:142-162` (`parse_hex_color`)
-
-Two nearly identical hex color parsing implementations. `parse_color_str` returns `Option<(f64,f64,f64)>`, `parse_hex_color` is a serde deserializer that does the same thing internally.
-
-**Fix:** Have `parse_hex_color` call `parse_color_str` internally instead of reimplementing the parsing.
-
----
-
-## 3. Duplicated `IcedRenderer` Type Alias
-
-**Files:** `src/widgets/mod.rs:17`, `src/iced_renderer.rs:16`
-
-Both define `type IcedRenderer = iced_tiny_skia::Renderer;`. The widgets module defines its own instead of re-exporting from `iced_renderer`.
-
-**Fix:** Define once, re-export.
-
----
-
-## 4. Duplicated Widget Render Boilerplate
-
-**Files:** `src/widgets/static_button.rs`, `src/widgets/time.rs`, `src/widgets/temperature.rs`, `src/widgets/load.rs`, `src/widgets/window_title.rs`, `src/widgets/battery.rs`
-
-Nearly identical render patterns: `container(text(...).font().size().color(WHITE).align_x().align_y().width(Fill).height(Fill)).width(Fill).height(Fill).padding(2).style(...)`. This ~10 line block is repeated 8+ times across widgets.
-
-**Fix:** Extract a helper function like `styled_text_container(label, ctx, color, active)` that produces the common pattern.
-
----
-
-## 5. Duplicated `handle_event` Press/Release Pattern
-
-**Files:** `src/widgets/static_button.rs:133-147`, `src/widgets/time.rs:123-137`
-
-Identical press/release key-sending logic with active state toggle. The `BatteryWidget` has a minor variation.
-
-**Fix:** Extract a default implementation or helper for the common key-action press/release pattern.
-
----
-
-## 6. Duplicated Rate-Limiting / `refresh_if_needed` Pattern
-
-**Files:** `src/widgets/battery.rs:172-186`, `src/widgets/temperature.rs:77-86`, `src/widgets/load.rs:40-49`
-
-Three widgets implement the same pattern: check if `last_sysfs_read` was >1s ago, read sysfs, update `last_sysfs_read`. The `MemoryHistory` uses a similar but slightly different approach.
-
-**Fix:** Extract a `RateLimitedReader` or similar utility.
-
----
-
-## 7. Duplicated Log-Once Pattern
-
-**Files:** `src/widgets/battery.rs:289-296`, `src/widgets/temperature.rs:115-123`, `src/widgets/load.rs:77-85`
-
-Three widgets use the same "report failure/recovery via log-once" pattern with a `*_failed` bool.
-
-**Fix:** Extract into a small `LogOnce` struct with `check(ok: bool, fail_msg, recover_msg)`.
-
----
-
-## 8. Memory Leak: Font Family String
-
-**File:** `src/iced_renderer.rs:51`
-
-```rust
-Family::Name(font_family.to_string().leak())
-```
-
-The font family string is intentionally leaked. While this is common for `'static` requirements, it leaks on every config reload (each `TouchbarRenderer::new()` call leaks a new `String`).
-
-**Fix:** Use a `once_cell` or `Box::leak` only once, or use a static buffer. Alternatively, cache the leaked string and reuse it if the font family hasn't changed.
-
----
-
-## 9. Vestigial `_battery_mode` Parameter
-
-**File:** `src/widgets/battery.rs:150`
-
-```rust
-pub fn try_new(_battery_mode: &str, ...) -> Option<Self> {
-```
-
-The `mode` field from config is passed in but completely ignored (prefixed with `_`). The config still has `mode: String` in `WidgetConfig::Battery`.
-
-**Fix:** Either implement mode-based behavior or remove the parameter and config field.
-
----
-
-## 10. Vestigial `theme` Field in Icon Config
-
-**File:** `src/config.rs:174`
-
-```rust
-Icon { icon: String, theme: Option<String> }
-```
-
-In `src/widgets/mod.rs:195`:
-```rust
-WidgetConfig::Icon { icon, theme: _ } => { ... }
-```
-
-The `theme` field is parsed from config but explicitly ignored.
-
-**Fix:** Either implement theme support or remove the field.
-
----
-
-## 11. Vestigial `_provider` Parameter in WorkspaceManager
-
-**File:** `src/workspace/mod.rs:50`
-
-```rust
-pub fn new(_provider: Option<&str>) -> Self {
-    // Niri is the only supported compositor; always create NiriBackend.
-```
-
-The `provider` field from `WorkspacesConfig` is accepted but ignored. The comment acknowledges this.
-
-**Fix:** Remove the parameter or implement provider selection.
-
----
-
-## 12. `pixel_shift` Computed but Never Applied
-
-**File:** `src/main.rs:249-255`, `src/pixel_shift.rs:96-106`
-
-`PixelShiftManager` has an `update()` method that returns timing info and a `get()` method that returns `(x_offset, y_offset)`, but `get()` is never called in `main.rs`. The pixel shift offsets are calculated but never applied to the rendering. The `update()` return value only controls timing/redraw.
-
-**Fix:** Either apply `pixel_shift.get()` offsets to the render pipeline or remove the feature entirely.
-
----
-
-## 13. `has_reconnect_flash()` Never Called
-
-**Files:** `src/widgets/workspace.rs:41-43`, `src/widgets/volume.rs:39-41`
-
-Both `WorkspaceWidget::has_reconnect_flash()` and `VolumeWidget::has_reconnect_flash()` are defined as public methods but never called anywhere. The underlying `manager.has_reconnect_flash()` is also never consumed.
-
-**Fix:** Either use the flash flag to trigger a visual indication or remove these methods.
+**Status:** re-verified against the tree at `9bba109` on 2026-08-29. Items 1–13, 35 and 38
+were removed as resolved or invalid; the numbering of everything else is unchanged so that
+the commit messages referencing item numbers still resolve. Gaps in the sequence mean
+"done", not "missing".
+
+Several surviving items had stale details — wrong line numbers, a rationale that depended
+on since-deleted code, or a severity that changed when the shipped config changed. Those
+carry a **Revised** note.
+
+## Triage
+
+Size: **XS** ≈ minutes · **S** ≈ under an hour · **M** ≈ a few hours · **L** ≈ a day or more.
+
+| # | Item | Severity | Size | Hot path |
+|---|------|----------|------|----------|
+| 40 | Volume/workspace widgets never reconnect on the inactive layer | High | XS | |
+| 15 | Memory graph is sample-starved by the main loop timeout | High | S | |
+| 18 | `set_var` called from a live thread in `NiriBackend::try_connect` | High | M | |
+| 31 | System config `unwrap()` panics with no message | Medium | XS | |
+| 42 | `epoll.wait` timeout cast to `u16` without clamping | Medium | XS | |
+| 32 | `DrmBackend::map()` mmaps on every redraw | Medium | S | per redraw |
+| 27 | `RenderContext` allocates a `String` per touch event | Medium | S | per touch |
+| 23 | `epoll.wait` uses a single-element event buffer | Medium | XS | per wakeup |
+| 45 | Background threads leak on config reload | Medium | M | |
+| 34 | R/B channel swap worked around in every custom widget | Medium | M | |
+| 36 | Inconsistent error handling across the codebase | Medium | L | |
+| 43 | Dead conditional in `TimeWidget::render` | Low | XS | |
+| 44 | `display.rs` collects connectors/CRTCs it does not need | Low | XS | |
+| 39 | `add_watch_safe` does a redundant `exists()` check | Low | XS | |
+| 37 | `parse_session_properties` does not trim the value | Low | XS | |
+| 19 | `println!` where everything else uses `eprintln!` | Low | XS | |
+| 21 | Manual byte-by-byte C string construction | Low | XS | |
+| 14 | `MemoryWidget::sample_interval_ms()` never called | Low | XS | |
+| 16 | Dead `active` field on `MemoryWidget` | Low | XS | |
+| 26 | `window_title()` allocates a `String` on every call | Low | XS | per touch |
+| 28 | `VolumeConfig` proxy adds no value | Low | XS | |
+| 17 | `show_button_outlines` parsed but never read | Low | XS–S | |
+| 20 | Hardcoded epoll data values | Low | S | |
+| 22 | `dispatch_message` closure takes 6 parameters | Low | S | |
+| 24 | `VolumeWidget` is double-wrapped in `mouse_area` | Low | S | |
+| 25 | `WorkspaceWidget` is double-wrapped in `mouse_area` | Low | S | |
+| 29 | Config field merging is repetitive | Low | S | |
+| 33 | `f64` colors cast to `f32` at every use site | Low | S | |
+| 41 | `Mutex<Option<JoinHandle>>` for interior mutability | Low | S | |
+| 30 | `BaseConfigProxy` duplicates most of `ConfigProxy` | Low | M | |
+
+### On performance
+
+**Nothing in this list is performance-critical at idle.** Idle CPU was the subject of quick
+tasks 6–12 and `d8422fd`; the main loop now blocks in `epoll.wait` and only renders when a
+widget reports a change. What is left touches two paths that are warm but not hot:
+
+- **Per redraw** — item 32. `map_dumb_buffer` is an ioctl plus `mmap`, and the `DumbMapping`
+  is dropped (so `munmap`) immediately after the `copy_from_slice`. That is three syscalls
+  per frame that could be zero.
+- **Per touch event** — items 27 and 26. Every touch event builds a fresh `RenderContext`,
+  which calls `layer_mgr.window_title()`, which locks the niri state mutex and clones a
+  `String`. A finger drag produces a stream of these.
+- **Per wakeup** — item 23. One event per `epoll.wait` means one extra loop iteration per
+  pending event, each running `layer_mgr.update()` and `poll()` over both layers.
+
+On a 2048×64 framebuffer all three are very likely sub-millisecond. Treat them as tidiness
+with a performance flavour, not as optimisation work, and measure before changing anything.
+
+Item 15 reads like a performance issue but is a correctness one — see below.
 
 ---
 
 ## 14. `sample_interval_ms()` Never Called
 
-**File:** `src/widgets/memory.rs:35-37`
+**File:** `src/widgets/memory.rs:33-35`
 
-`MemoryWidget::sample_interval_ms()` is defined but never called anywhere.
+`MemoryWidget::sample_interval_ms()` forwards to `MemoryHistory::sample_interval_ms()` and
+is called from nowhere. Its doc comment ("Expose sample interval for main loop timeout
+calculation") describes the wiring that item 15 says is missing.
 
-**Fix:** Remove or use it for main loop timeout calculation.
+**Fix:** Remove it, or use it to fix item 15 — those are the same decision, so resolve 15 first.
 
 ---
 
-## 15. Suspicious `MemoryWidget::needs_faster_refresh()` Always Returns False
+## 15. Memory Graph Is Sample-Starved by the Main Loop Timeout
 
-**File:** `src/widgets/memory.rs:91-93`
+**File:** `src/widgets/memory.rs:85-87`, `src/main.rs:246-251`
 
 ```rust
 fn needs_faster_refresh(&self) -> bool { false }
 ```
 
-This explicitly overrides the default (which already returns `false`), so it's redundant. But more importantly, the memory widget samples at configurable intervals (default 1000ms) which is faster than the default 10s timeout. Since `needs_faster_refresh()` returns false, the main loop won't wake up frequently enough to call `update()` and sample memory on time unless another widget forces faster refresh.
+The main loop timeout is `min((60 - second) * 1000, TIMEOUT_MS)` with `TIMEOUT_MS = 10_000`,
+shortened to 1000ms only when some widget returns true from `needs_faster_refresh()`.
+`MemoryWidget` returns false, so unless another widget forces a faster refresh the loop can
+sleep for up to 10s while `MemoryHistory::maybe_sample()` expects to be called at
+`sample_interval_ms` (default 1000ms).
 
-**Fix:** Return `true` or integrate the sample interval into the main loop timeout calculation.
+The shipped `config.toml` makes this concrete: its time widgets use `%H:%M` and `%Y-%m-%d`,
+neither of which contains seconds, so `TimeWidget::needs_faster_refresh()` is false too.
+Nothing forces the fast path, and the graph collects roughly one sample per 10s while its
+x-axis is scaled for one per second.
+
+**Revised 2026-08-29:** the original entry called this "suspicious" and "redundant". It is
+neither — it is a live bug in the default configuration, and the redundant-override framing
+buried that.
+
+**Fix:** Fold the sample interval into the main loop timeout (this is what item 14's dead
+accessor was for) rather than returning `true`, which would pin the loop at 1000ms even when
+the configured interval is longer.
 
 ---
 
 ## 16. `active` Field on Non-Interactive Widgets
 
-**Files:** `src/widgets/memory.rs:17` (never set), window_title widget (no `active` field but always passes `false`)
+**File:** `src/widgets/memory.rs:14,28,41`
 
-`MemoryWidget` has an `active: bool` field that is initialized to `false` and never modified (`handle_event` is a no-op). The field and its plumbing through render are dead code.
+`MemoryWidget` has an `active: bool` initialised to `false` and never written — it does not
+implement `handle_event`, so it takes the trait's no-op default. The field is threaded
+through `render` into `button_style` where it is always `false`.
 
-**Fix:** Remove `active` from widgets that don't use it.
+**Revised 2026-08-29:** `window_title.rs` no longer has the mirror problem the original entry
+mentioned; it passes a literal `false` to `styled_text_widget`, which is honest.
 
----
-
-## 17. Inconsistent `show_button_outlines` Config Field
-
-**File:** `src/config.rs:86`
-
-`Config` has `show_button_outlines: bool` but it's never read or used anywhere in the rendering code. It was likely part of a previous implementation.
-
-**Fix:** Remove if unused, or implement it.
+**Fix:** Remove `active` from `MemoryWidget` and pass `false` at the call site.
 
 ---
 
-## 18. `unsafe` `set_var` Calls
+## 17. `show_button_outlines` Parsed but Never Read
 
-**Files:** `src/main.rs:141-145`, `src/workspace/niri.rs:93`
+**File:** `src/config.rs:84,99,201,213,254,307`
 
-`std::env::set_var` is marked unsafe in Rust 2024 edition (and was already unsound in earlier editions when called from multi-threaded code). The niri backend calls it from a method that could be called while the PA thread is running.
+`Config::show_button_outlines` is deserialised, merged, and required (`load_config` errors
+out with "missing ShowButtonOutlines in config" if absent) but never read. `button_style()`
+takes only colour and active state.
 
-**Fix:** Use `unsafe` blocks with safety comments, or restructure to set env vars before spawning threads.
+Note this is a *documented* key — both shipped configs describe it, so deleting it removes
+an advertised feature rather than an internal detail.
+
+**Fix:** Decide deliberately. Implementing it is a small change to `button_style` (XS–S);
+removing it means also removing it from both config files and accepting the behaviour change.
 
 ---
 
-## 19. `println!` Mixed with `eprintln!`
+## 18. `set_var` Called From a Live Thread
 
-**File:** `src/backlight.rs:161`
+**File:** `src/workspace/niri.rs:66`
+
+```rust
+unsafe { std::env::set_var("NIRI_SOCKET", &socket_path) };
+```
+
+`setenv(3)` is not thread-safe. glibc may free the old environment block while another
+thread is inside `getenv`, so a concurrent reader can dereference freed memory. This call
+sits in `NiriBackend::try_connect()`, which runs at reconnect time — by which point the
+PulseAudio mainloop thread and possibly a previous niri reader thread are alive, and
+libpulse does read environment variables.
+
+**Revised 2026-08-29:** the original entry also flagged `src/main.rs:140-145`. Those are
+fine: the crate is edition 2021 and all three calls happen after `PrivDrop::apply()` but
+before `LayerManager::new()` spawns anything, so the process is still single-threaded there.
+The `unsafe` block on the niri call is doing no work — it silences the lint without
+establishing the invariant.
+
+**Fix:** Stop using the environment as a side channel. `niri_ipc::Socket::connect_to(path)`
+takes an explicit path; thread the discovered socket path through `NiriBackend` instead of
+setting a global.
+
+---
+
+## 19. `println!` Mixed With `eprintln!`
+
+**File:** `src/backlight.rs:160`
 
 ```rust
 println!("Lid Switch event: {:?}", self.lid_state);
 ```
 
-All other logging uses `eprintln!`. This single `println!` goes to stdout instead of stderr.
+The only `println!` in the crate; everything else logs to stderr.
 
-**Fix:** Change to `eprintln!` for consistency.
+**Fix:** Change to `eprintln!`. Folds into the tracing migration seeded in `1534e7c`.
 
 ---
 
 ## 20. Hardcoded Magic Numbers in Epoll Registration
 
-**File:** `src/main.rs:164-171, 217-220`
+**Files:** `src/main.rs:163,166,170,218`, `src/layer_manager.rs:37`, `src/widgets/mod.rs:89`
 
-Epoll data values (0, 1, 2, 3, 6, 10+) are scattered across `main.rs` and `layer_manager.rs` with only comments explaining their meaning. The gap at 4-5 is unexplained.
+Epoll data values are scattered as bare integers: 0 and 1 (input seats) and 3 (udev) in
+`main.rs`, 2 (config inotify) in `layer_manager.rs`, 6 (reconnect watcher) back in
+`main.rs`, and widget fds from 10 up in `FdRegistry`. `main.rs` carries a comment
+explaining that 2 is claimed elsewhere, which is a workaround for the layout not being
+written down anywhere.
 
-**Fix:** Use named constants (e.g., `EPOLL_INPUT_MAIN = 0`, `EPOLL_INPUT_TB = 1`, etc.).
+**Revised 2026-08-29:** 4 and 5 used to be the workspace and volume eventfds. Since
+`f4322f0` those go through `FdRegistry` starting at 10, so the gap is now genuinely unused
+rather than merely undocumented.
+
+**Fix:** Named constants in one module.
 
 ---
 
-## 21. C String Construction is Non-Idiomatic
+## 21. C String Construction Is Non-Idiomatic
 
-**File:** `src/main.rs:194-198`
+**File:** `src/main.rs:193-197`
 
 ```rust
 let mut dev_name_c = [0 as c_char; 80];
@@ -247,230 +212,232 @@ for i in 0..dn.len() {
 }
 ```
 
-Manual byte-by-byte copy to create a C string.
+Manual byte-by-byte copy. Also silently truncates nothing today but would overflow the
+array if the name ever exceeded 80 bytes.
 
-**Fix:** Use `CString` or at minimum a slice copy operation.
-
----
-
-## 22. `dispatch_message` Uses Closure That Borrows Multiple Mutable References
-
-**File:** `src/main.rs:401-452`
-
-The `widget_action` closure inside `dispatch_message` takes 6 parameters including both `layer_mgr` and `uinput` by mutable reference, making the code hard to follow. The closure is only used twice (Pressed/Released).
-
-**Fix:** Inline the closure or restructure into a method on `LayerManager`.
+**Fix:** Slice copy with an explicit length check, or `CString`.
 
 ---
 
-## 23. `epoll.wait` Uses Single-Element Event Buffer
+## 22. `dispatch_message` Closure Takes Six Parameters
 
-**File:** `src/main.rs:309-310`
+**File:** `src/main.rs:392-416`
+
+The `widget_action` closure takes `layer_mgr`, `idx`, `action`, `uinput`, `btu` and `redraw`
+— it captures nothing, so every dependency is threaded through the parameter list. It is
+called exactly twice, for `WidgetPressed` and `WidgetReleased`.
+
+**Fix:** Promote it to a free function or a `LayerManager` method.
+
+---
+
+## 23. `epoll.wait` Uses a Single-Element Event Buffer
+
+**File:** `src/main.rs:293-294`
 
 ```rust
 let mut ep_events = [EpollEvent::new(EpollFlags::EPOLLIN, 0)];
 epoll.wait(&mut ep_events, timeout as u16).unwrap_or(0);
 ```
 
-Only one event is retrieved per iteration. Multiple simultaneous events (e.g., input + widget fd) require multiple loop iterations. Not necessarily a bug, but wastes wakeups.
+One event is dequeued per iteration, so N simultaneously-ready fds cost N full loop
+iterations — each running `layer_mgr.update()` and `layer_mgr.poll()` across both layers.
+The return value is discarded via `unwrap_or(0)`, so the count is not even inspected.
 
-**Fix:** Consider a larger event buffer (e.g., 4-8 events) to batch process.
-
----
-
-## 24. `VolumeWidget` Doesn't Forward `handle_event` Actions
-
-**File:** `src/widgets/volume.rs:151-153`
-
-```rust
-fn handle_event(&mut self, _action: WidgetAction) -> Vec<MainLoopAction> {
-    vec![]
-}
-```
-
-The volume widget handles press/release through its own `Message::VolumeDownPress` etc. via `mouse_area`, but the generic `handle_event` is a no-op. This means generic press actions from the outer `mouse_area` wrapper in `build_widget_row` are silently dropped. Double-wrapping in mouse_area may cause confusing behavior.
-
-**Fix:** Either handle the outer mouse_area press/release or skip wrapping VolumeWidget in the outer mouse_area.
+**Fix:** Use a 4–8 element buffer and iterate the returned slice.
 
 ---
 
-## 25. `WorkspaceWidget` Similarly Double-Wrapped
+## 24. `VolumeWidget` Is Double-Wrapped in `mouse_area`
 
-**File:** `src/widgets/workspace.rs:88-92` and `src/iced_renderer.rs:384-388`
+**Files:** `src/widgets/volume.rs`, `src/iced_renderer.rs:396-401`
 
-Workspace buttons have their own `mouse_area` handlers (WorkspaceDown/Up), but the outer `build_widget_row` wraps every widget in another `mouse_area` with WidgetPressed/Released. The workspace widget's `handle_event` is a no-op, so the outer press/release is wasted.
+`build_widget_row` wraps every widget in a `mouse_area` emitting
+`WidgetPressed`/`WidgetReleased`, and `VolumeWidget::render` builds its own inner
+`mouse_area`s emitting `VolumeDownPress` and friends. The widget does not implement
+`handle_event`, so the outer messages round-trip through `dispatch_message` and do nothing.
 
-**Fix:** Allow widgets to opt out of the outer mouse_area wrapper, or have the workspace widget handle the outer events.
+**Revised 2026-08-29:** the explicit `fn handle_event(&mut self, _) -> vec![]` the original
+entry quoted was removed in `256eeef`; the widget now inherits the trait default. Same
+behaviour, different code.
+
+**Fix:** Let widgets opt out of the outer wrapper.
 
 ---
 
-## 26. `window_title` Allocated Every Loop Iteration
+## 25. `WorkspaceWidget` Is Double-Wrapped in `mouse_area`
+
+**Files:** `src/widgets/workspace.rs`, `src/iced_renderer.rs:396-401`
+
+As item 24: per-workspace `mouse_area`s emitting `WorkspaceDown`/`WorkspaceUp` inside the
+generic wrapper, with no `handle_event` to consume the outer messages.
+
+**Fix:** Same as item 24 — one opt-out mechanism resolves both.
+
+---
+
+## 26. `window_title()` Allocates on Every Call
 
 **File:** `src/layer_manager.rs:160-167`
 
-```rust
-pub fn window_title(&self) -> String {
-    // ... returns String::new() if no title
-}
-```
+Walks the active layer, returns the first widget's `Option<String>`, or `String::new()`.
+The workspace widget's implementation locks the niri state mutex and clones the title.
 
-Called every render cycle, allocates a new `String` even when unchanged.
+**Revised 2026-08-29:** the original entry said "called every render cycle". It is now
+called from exactly two places — building the `RenderContext` for a redraw
+(`src/main.rs:285`) and building one per touch event (`src/main.rs:361`). Redraws are gated
+on actual change, so the idle cost is gone; the touch-event path remains.
 
-**Fix:** Return `&str` or `Cow<str>`, or cache the title.
+**Fix:** Resolve with item 27 — they are the same allocation.
 
 ---
 
-## 27. `RenderContext` Allocates `window_title: String` Every Frame
+## 27. `RenderContext` Allocates a `String` Per Touch Event
 
-**File:** `src/main.rs:289-295`
+**File:** `src/main.rs:280-286` and `src/main.rs:356-362`
 
-A new `RenderContext` with a freshly-cloned `window_title` String is created every render frame and every touch event.
+`RenderContext` owns `window_title: String`. One is constructed per redraw and one per
+touch event, each cloning the title out from behind the niri mutex. A drag across the
+touchbar generates a continuous stream of touch events.
 
-**Fix:** Use `&str` lifetime or `Cow` in `RenderContext`.
+**Fix:** Borrow instead — `window_title: &str` with a lifetime on `RenderContext`, or
+`Cow<'_, str>`. Caching the title in `LayerManager` and invalidating on the workspace
+eventfd would also work and avoids touching every widget signature.
 
 ---
 
 ## 28. `VolumeConfig` Wrapper Adds No Value
 
-**Files:** `src/config.rs:56-72`
+**File:** `src/config.rs:53-70`
 
-`VolumeConfig` contains only `pulse_server: Option<String>`, and `VolumeConfigProxy` is a 1:1 mirror. The proxy-to-config conversion is trivial.
+`VolumeConfig` holds one field, `VolumeConfigProxy` mirrors it exactly, and the `From` impl
+moves it across. `WorkspacesConfig` has the same shape but earns its proxy — it applies
+defaults and parses colours.
 
-**Fix:** Remove the proxy, deserialize directly into `VolumeConfig`.
+**Fix:** Derive `Deserialize` on `VolumeConfig` directly and delete the proxy.
 
 ---
 
-## 29. Config Field Merging is Repetitive
+## 29. Config Field Merging Is Repetitive
 
-**File:** `src/config.rs:272-283`
+**File:** `src/config.rs:252-264`
 
-```rust
-base.media_layer_default = user.media_layer_default.or(base.media_layer_default);
-base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
-// ... 10 more lines
-```
+Twelve consecutive lines of `base.X = user.X.or(base.X)`. Adding a config key means
+remembering to add a line here, and forgetting silently drops the user's override.
 
-Each config field is manually merged with the same `user.X.or(base.X)` pattern.
-
-**Fix:** Consider a macro or a merge trait to reduce boilerplate.
+**Fix:** A `merge!` macro over the field list, or a derive.
 
 ---
 
 ## 30. `BaseConfigProxy` Duplicates Most of `ConfigProxy`
 
-**Files:** `src/config.rs:98-113` vs `src/config.rs:214-225`
+**Files:** `src/config.rs:97-110` vs `src/config.rs:199-210`
 
-`BaseConfigProxy` is a subset of `ConfigProxy` (without layer keys, workspaces, volume). The fields are manually transcribed.
+`BaseConfigProxy` is `ConfigProxy` minus the layer keys, workspaces and volume, with the
+fields transcribed by hand and an `into_config_proxy()` that copies them across. It exists
+to re-parse global settings when the system config has old-format layer entries.
 
-**Fix:** Consider using `#[serde(default)]` on `ConfigProxy` fields instead of maintaining a separate struct.
+**Fix:** `#[serde(default)]` plus `#[serde(flatten)]` on a shared globals struct, so the
+field list lives in one place.
 
 ---
 
-## 31. `system config unwrap` Will Panic If Missing
+## 31. System Config `unwrap()` Panics With No Message
 
-**File:** `src/config.rs:249`
+**File:** `src/config.rs:230`
 
 ```rust
 let sys_str = read_to_string("/usr/share/smol-dfr/config.toml").unwrap();
 ```
 
-This panics if the system config file doesn't exist. Other failures are handled gracefully.
+Panics with a bare `Os { code: 2 }` if the shipped config is missing — a plausible packaging
+or dev-checkout failure. Every other read in the function degrades gracefully, and
+`load_config` already returns `Result<_, String>`, so the error has somewhere to go.
 
-**Fix:** Return an error instead of panicking, or at least provide a clear panic message.
+**Fix:** Propagate as an error naming the path.
 
 ---
 
-## 32. `DrmBackend::map()` Called Every Frame
+## 32. `DrmBackend::map()` Called Every Redraw
 
-**File:** `src/main.rs:297`
+**Files:** `src/main.rs:288`, `src/display.rs:210-212`
 
 ```rust
 drm.map().unwrap().as_mut()[..buf.len()].copy_from_slice(buf);
 ```
 
-`map()` calls `map_dumb_buffer()` which likely involves an mmap syscall each time. The mapping is immediately dropped after copy.
+`map()` calls `map_dumb_buffer`, which issues `DRM_IOCTL_MODE_MAP_DUMB` and `mmap`. The
+returned `DumbMapping` is a temporary, so it is unmapped at the end of the statement —
+three syscalls per frame for a mapping that could persist.
 
-**Fix:** Consider keeping the mapping alive across frames if the DRM API allows it.
+**Fix:** Hold the mapping in `DrmBackend` across frames if the borrow checker and the `drm`
+crate's lifetimes allow (`map()` takes `&mut self` and `DumbMapping` borrows the buffer, so
+this needs care). Measure first — see the performance note above.
 
 ---
 
 ## 33. `f64` Color Representation Throughout
 
-**Files:** All widget files, `src/config.rs`
+**Files:** `src/config.rs`, all widget files
 
-Colors are represented as `(f64, f64, f64)` tuples but always used as `f32` in iced. Every usage site casts: `r as f32, g as f32, b as f32`.
+Colours are `(f64, f64, f64)` (28 occurrences) and cast at every use site (22 `as f32`).
+iced wants `f32` and the source is 8-bit hex, so the extra precision is never real.
 
-**Fix:** Use `(f32, f32, f32)` or iced's `Color` type directly.
+**Fix:** Use `iced_core::Color` from the config boundary inward.
 
 ---
 
 ## 34. R/B Swap Hack in Custom Widgets
 
-**Files:** `src/battery_icon_widget.rs:23-35`, `src/memory_graph_widget.rs:21-28`
+**Files:** `src/battery_icon_widget.rs:27,30`, `src/memory_graph_widget.rs:26`
 
-Both custom widgets manually swap R and B channels because `fill_quad` uses BGRA byte order internally:
+Both custom widgets pre-swap red and blue because `fill_quad` writes BGRA:
 
 ```rust
 // Red — R/B swapped for fill_quad BGRA: desired (1,0,0) → (0,0,1)
 Color::from_rgb(0.0, 0.0, 1.0)
 ```
 
-This is fragile and breaks if the iced renderer internals change.
+Every new custom widget has to rediscover this, and an `iced_tiny_skia` upgrade could
+silently invert every colour.
 
-**Fix:** Investigate why `fill_quad` has swapped channels. This may be a bug in the interaction with `iced_tiny_skia` or the rotation pipeline. Fix at the source rather than working around it in every custom widget.
-
----
-
-## 35. `PIXEL_SHIFT_WIDTH_PX` Is `pub` Unnecessarily
-
-**File:** `src/pixel_shift.rs:15`
-
-`PIXEL_SHIFT_WIDTH_PX` is `pub` but only used within the module (and never imported elsewhere).
-
-**Fix:** Remove `pub`.
+**Fix:** Find the actual source. The suspects are the `Pixmap` format, the RGBA→XRGB8888
+conversion in the rotation pass, and the DRM framebuffer format — the fix belongs in
+whichever one is lying, not in the widgets.
 
 ---
 
-## 36. Inconsistent Error Handling: Mix of `unwrap()`, `expect()`, `eprintln!`, and `Result`
+## 36. Inconsistent Error Handling
 
-Throughout the codebase, error handling varies:
-- `main.rs`: Heavy use of `.unwrap()` (DRM, uinput, epoll)
-- `config.rs`: Returns `Result<_, String>` (not `anyhow::Error`)
-- `display.rs`: Returns `anyhow::Result`
-- Widgets: `eprintln!` + fallback values
-- `backlight.rs`: `eprintln!` + graceful degradation
+Error handling varies by module with no stated rule:
 
-**Fix:** Standardize on `anyhow::Result` for initialization code, keep `eprintln!` for runtime degradation. Replace bare `.unwrap()` with `.expect("context")` or proper error propagation.
+- `main.rs` — heavy bare `.unwrap()` on DRM, uinput and epoll setup
+- `config.rs` — `Result<_, String>`
+- `display.rs` — `anyhow::Result`
+- widgets — `eprintln!` plus a fallback value
+- `backlight.rs` — `eprintln!` plus graceful degradation
 
----
-
-## 37. `session_detect::parse_session_properties` Doesn't Trim `=` Value
-
-**File:** `src/session_detect.rs:35-41`
-
-Values after `=` are not trimmed, but the test at line 156-163 uses inputs with trailing whitespace and expects them to work because `line.trim()` is called first. However, if a value itself contains leading/trailing spaces (e.g., `Name= user `), those spaces would be preserved in the parsed result.
-
-This is minor but inconsistent with the comment "with extra whitespace".
+**Fix:** Write the rule down first — `anyhow::Result` for anything on the startup path,
+degrade-and-log for anything on the runtime path — then converge on it. Large and diffuse;
+best done opportunistically alongside the tracing migration rather than as one change.
 
 ---
 
-## 38. `reconnect_watcher.ensure_watches()` Called Unconditionally Every Loop
+## 37. `parse_session_properties` Does Not Trim the Value
 
-**File:** `src/main.rs:319`
+**File:** `src/session_detect.rs:28-45`
 
-```rust
-reconnect_watcher.ensure_watches();
-```
+`line.trim()` runs before `strip_prefix`, so trailing whitespace is handled but a space
+after the `=` is not: `Name= user` parses to `" user"`. The test inputs only exercise
+trailing whitespace, so this passes.
 
-Called every loop iteration regardless of whether any watches were invalidated. Each call does `Path::new(path).exists()` stat calls.
-
-**Fix:** Only call after handling IN_IGNORED events (when watches were actually invalidated).
+**Fix:** `val.trim()` at each of the three call sites.
 
 ---
 
-## 39. `add_watch_safe` Does Redundant Existence Check
+## 39. `add_watch_safe` Does a Redundant Existence Check
 
-**File:** `src/reconnect.rs:160-161`
+**File:** `src/reconnect.rs:160-162`
 
 ```rust
 if !Path::new(path).exists() { return None; }
@@ -478,15 +445,16 @@ match inotify.add_watch(path, flags) {
     Err(Errno::ENOENT) => None,
 ```
 
-The `exists()` check is redundant since `add_watch` already handles `ENOENT`. The check just adds an extra stat syscall.
+`add_watch` already maps `ENOENT` to `None` on the next line, so the `exists()` stat is
+pure overhead — and racy besides, since the directory can appear between the two calls.
 
-**Fix:** Remove the `exists()` check.
+**Fix:** Delete the `exists()` check.
 
 ---
 
-## 40. `WorkspaceWidget` and `VolumeWidget` Don't Reconnect on Inactive Layer
+## 40. Widgets on the Inactive Layer Never Reconnect
 
-**File:** `src/layer_manager.rs:128-136`
+**File:** `src/layer_manager.rs:128-143`
 
 ```rust
 pub fn reconnect(&mut self) -> bool {
@@ -494,76 +462,103 @@ pub fn reconnect(&mut self) -> bool {
 }
 ```
 
-Only the active layer's widgets get reconnection attempts. If a workspace or volume widget is on the inactive layer and its service restarts, it won't reconnect until the user switches layers.
+`reconnect()` and `any_disconnected()` both only look at the active layer. Initial
+connection is fine — `build_widget_layer` calls `try_connect()` for both layers at
+construction — but once a service restarts, a widget on the inactive layer stays
+disconnected until the user switches layers.
 
-**Fix:** Reconnect widgets on both layers.
+**Revised 2026-08-29:** this went from theoretical to default-configuration behaviour in
+`9bba109`, which moved the volume widget into `MediaLayerKeys` while `MediaLayerDefault`
+is `false`. The volume widget now lives on the inactive layer out of the box, so a
+PulseAudio restart leaves it dead until the user holds Fn. The startup warning
+("will reconnect when available") is actively wrong for it.
 
----
-
-## 41. `VolumeManager::thread` Uses `Mutex<Option<JoinHandle<()>>>` for No Clear Reason
-
-**File:** `src/volume.rs:32`
-
-The `thread` field is wrapped in `Mutex` but is only accessed from `try_connect()`, which takes `&self`. The `Mutex` is needed because `try_connect` takes `&self` rather than `&mut self`. But the trait could be changed.
-
-Similarly in `NiriBackend` (`src/workspace/niri.rs:22-23`).
-
-**Fix:** Consider taking `&mut self` in `try_connect()` to avoid interior mutability, or document why `&self` is required.
+**Fix:** Iterate both layers in `reconnect()` and `any_disconnected()`.
 
 ---
 
-## 42. `epoll.wait` Timeout Cast
+## 41. `Mutex<Option<JoinHandle<()>>>` for Interior Mutability
 
-**File:** `src/main.rs:310`
+**Files:** `src/volume.rs:31`, `src/workspace/niri.rs:23`
+
+The join handle is wrapped in a `Mutex` only because `try_connect()` takes `&self`, which
+in turn is because `WorkspaceBackend::try_connect` is declared that way. Nothing else
+contends for the lock.
+
+**Fix:** Take `&mut self` in the trait method and drop the `Mutex`, or document why `&self`
+is required. Interacts with item 45 — both concern thread ownership.
+
+---
+
+## 42. `epoll.wait` Timeout Cast Without Clamping
+
+**File:** `src/main.rs:294`
 
 ```rust
 epoll.wait(&mut ep_events, timeout as u16).unwrap_or(0);
 ```
 
-`timeout` is `i32` but cast to `u16`. If timeout exceeds 65535ms (~65s), it silently wraps. The default `TIMEOUT_MS` is 10000 which is fine, but the pixel shift `PROLONGED_INTERVAL_MS` is 50000 and combined timeouts could theoretically exceed this.
+`timeout` is `i32` and wraps silently above 65535.
 
-**Fix:** Clamp before casting: `timeout.min(u16::MAX as i32) as u16`.
+**Revised 2026-08-29:** currently unreachable. The original entry justified this with pixel
+shift's `PROLONGED_INTERVAL_MS = 50000`, which `963356a` deleted. Today `timeout` starts at
+`min((60 - second) * 1000, TIMEOUT_MS)` with `TIMEOUT_MS = 10_000` and is only ever reduced,
+so it cannot exceed 10000. Kept because the trap is one constant away from reopening —
+raising `TIMEOUT_MS` past 65535 would produce a truncated timeout with no diagnostic. Item
+15's fix touches exactly this arithmetic.
+
+**Fix:** `timeout.clamp(0, u16::MAX as i32) as u16`.
 
 ---
 
-## 43. `time_widget` Render Has Dead Code Branch
+## 43. Dead Conditional in `TimeWidget::render`
 
-**File:** `src/widgets/time.rs:96-104`
+**File:** `src/widgets/time.rs:82-90`
 
 ```rust
 if self.action.is_empty() {
     inner
 } else {
-    // Wrap in mouse_area -- widget index is set by the renderer...
-    inner  // <-- same as the if branch!
+    // Wrap in mouse_area -- widget index is set by the renderer ...
+    inner  // <-- same as the if branch
 }
 ```
 
-Both branches return `inner` unchanged. The comment suggests wrapping in mouse_area but the code doesn't actually do it. The outer `build_widget_row` already wraps in mouse_area.
+Both branches return `inner`. The comment describes wrapping that `build_widget_row` already
+does.
 
-**Fix:** Remove the dead conditional.
+**Fix:** Delete the conditional and the comment.
 
 ---
 
-## 44. `display.rs` Collects All Connectors/CRTCs But Only Uses First
+## 44. `display.rs` Collects Connectors/CRTCs It Does Not Need
 
 **File:** `src/display.rs:74-83`
 
-```rust
-let coninfo = res.connectors().iter().flat_map(...).collect::<Vec<_>>();
-let crtcinfo = res.crtcs().iter().flat_map(...).collect::<Vec<_>>();
-```
+Both `connectors()` and `crtcs()` are collected into `Vec`s, then reduced to a single
+element by `find(connected)` and `first()`.
 
-Collects all connectors into a Vec but only uses `find(connected)` and `first()`. The allocation is unnecessary.
-
-**Fix:** Use iterators directly without collecting.
+**Fix:** Drop the `collect()` and use the iterators directly. Startup-only, so this is
+tidiness rather than performance.
 
 ---
 
-## 45. Missing `Drop` / Cleanup for Background Threads
+## 45. Background Threads Leak on Config Reload
 
 **Files:** `src/volume.rs`, `src/workspace/niri.rs`
 
-Neither `VolumeManager` nor `NiriBackend` implements `Drop` to join their background threads. When these objects are dropped during config reload, the background threads may be left dangling.
+Neither `VolumeManager` nor `NiriBackend` implements `Drop`. `LayerManager::reload()`
+rebuilds both layers, dropping the old managers, but their threads keep running — the niri
+reader blocked in `read_events()` forever, the PulseAudio mainloop spinning with its server
+connection still open. Each config hot-reload adds another pair.
 
-**Fix:** Implement `Drop` to signal thread termination and join.
+**Revised 2026-08-29:** not a use-after-close. Both threads receive their own `dup()`ed
+`OwnedFd` (`src/volume.rs:70`, `src/workspace/niri.rs:115`), so the manager's `OwnedFd`
+closing does not invalidate the thread's. `VolumeManager::try_connect` also joins its
+previous thread before spawning. The problem is confined to the drop path, which makes this
+a resource leak rather than the memory-safety hazard the original entry implied.
+
+**Fix:** Implement `Drop`: signal the thread to stop (shutdown flag plus an eventfd poke
+for niri, `mainloop.quit()` for PulseAudio) and join it. Shutting down the niri reader
+cleanly needs the socket to be poll-able rather than blocking, so this is more than a
+few lines.
