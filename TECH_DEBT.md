@@ -112,13 +112,18 @@ to 0.0 = black). The iced path always shows backgrounds at 0.2 gray.
 **Fix**: Pass `show_button_outlines` through to `build_button_row` and set
 inactive `bg_color` to 0.0 when outlines are disabled.
 
-### 12. No pixel shift (OLED burn-in prevention)
+> Tracked as `CODE_REVIEW.md` item 17, which was blocked on not knowing what the
+> key was supposed to do. This entry is the answer: it hides backgrounds. Note
+> the key is still parsed and required by `load_config`, so it is a documented
+> feature that silently does nothing — implementing it will visibly change the
+> UI for every existing user.
 
-The Cairo path applies `pixel_shift` offsets to button positions each frame. The
-iced path ignores pixel shift entirely.
+### 12. No pixel shift (OLED burn-in prevention) — OBSOLETE
 
-**Fix**: Apply pixel shift as padding or translation on the outer container, or
-offset the viewport origin before rendering.
+Resolved by removal, not implementation. `PixelShiftManager` computed an offset
+every loop iteration that nothing ever applied, so it only cost wakeups and
+redraws. The module, the `EnablePixelShift` config key and the `rand` dependency
+were all dropped. Re-adding it means designing it from scratch.
 
 ### 13. No partial/dirty-region redraws
 
@@ -128,7 +133,11 @@ The iced path always does a full-screen redraw and dirties the entire framebuffe
 **Fix**: Track which buttons changed between frames and compute dirty `ClipRect`s
 from widget layout bounds (post-rotation). Or accept full redraws if perf is fine.
 
-### 14. Pixmap + clip mask + rotation buffer allocated every frame
+### 14. Pixmap + clip mask + rotation buffer allocated every frame — RESOLVED
+
+All three are now stored in `TouchbarRenderer` and reused; the pixmap is cleared
+per frame instead of reallocated. Original entry below.
+
 
 `render_to_buffer` creates a new `Pixmap`, `Mask`, and `Vec<u8>` rotation buffer
 on every call. For ~2170x64 at 4 bytes/pixel this is ~540 KB allocated and zeroed
@@ -137,14 +146,15 @@ per frame.
 **Fix**: Store the pixmap, clip mask, and rotation buffer in `TouchbarRenderer`
 and reuse them. Clear/zero at the start of each frame instead of reallocating.
 
-### 15. Naive per-pixel rotation loop
+### 15. Naive per-pixel rotation loop — RESOLVED, and it was not the problem
 
-The 90-degree rotation iterates pixel-by-pixel with individual byte copies and
-per-pixel premultiplied-alpha unpacking. No SIMD, no row-level memcpy.
+Rewritten in `src/rotate.rs` from index math to `chunks_exact`/`chunks_exact_mut`
+with integer unpremultiply. ~25% faster and it removed the unchecked indexing, so
+it was not a safety-for-speed trade.
 
-**Fix**: Optimize the hot path: batch by row, use SIMD for the RGBA->XRGB
-conversion, or render directly in rotated orientation if iced_tiny_skia supports
-a transform on the pixmap.
+More usefully: it was **measured**. ~0.19 ms per frame on the real geometry
+against a ~16 ms budget. The SIMD and rotated-rendering suggestions here were
+written before anyone had a number, and are not worth the complexity.
 
 ### 16. Hardcoded theme and font size
 
