@@ -4,10 +4,16 @@ Post-rewrite cleanup audit. Each issue is independent and can be addressed one-b
 
 **Status:** 35 of 45 original items resolved as of 2026-08-29 (`02efec4`). Resolved items
 are removed rather than struck through; the original numbering is preserved so the item
-references in commit messages still resolve, and gaps mean "done". Items 46–49 were found
-while doing the work and were not in the original audit.
+references in commit messages still resolve, and gaps mean "done". Items 46–50 were found
+while doing the work and were not in the original audit; 49 was fixed as it was written.
 
 Ten items remain: nine originals plus the niri half of item 45.
+
+> **Unverified on hardware:** item 34 (the red/blue double-swap, fixed in `a4b47f3`) was
+> derived by reading the `iced_tiny_skia` source, not by looking at a touchbar. It changes the
+> colour of everything on screen. If the display comes up with red and blue transposed, that
+> commit is the one to revert. Nothing else in this audit is unverified in that way — the rest
+> is covered by `cargo test`.
 
 ## Triage
 
@@ -22,13 +28,13 @@ Size: **XS** ≈ minutes · **S** ≈ under an hour · **M** ≈ a few hours · 
 | 26 | `window_title()` allocates a `String` on every call | Low | XS | |
 | 27 | `RenderContext` allocates a `String` per touch event | Low | S | |
 | 48 | Dead match arm in `reconnect.rs` | Low | XS | |
-| 49 | `.worktrees/` is not ignored | Low | XS | |
+| 50 | `WorkspacesConfigProxy::provider` parsed but never read | Low | XS | |
 | 17 | `show_button_outlines` parsed but never read | Low | XS–S | **decision** |
 | 20 | Hardcoded epoll data values | Low | S | |
 | 24 | `VolumeWidget` is double-wrapped in `mouse_area` | Low | S | |
 | 25 | `WorkspaceWidget` is double-wrapped in `mouse_area` | Low | S | |
-| 33 | `f64` colors cast to `f32` at every use site | Low | S | |
-| 36 | Inconsistent error handling across the codebase | Medium | L | |
+| 33 | `f64` colors cast to `f32` at every use site | Low | S | 35 warnings |
+| 36 | Inconsistent error handling across the codebase | Medium | L | 46 warnings |
 
 ### On performance
 
@@ -55,9 +61,14 @@ colour and active state.
 This is a *documented* key — both shipped configs describe it — so deleting it removes an
 advertised feature rather than an internal detail.
 
-**Blocked on a decision.** Implementing it is a small change to `button_style` (XS–S). Removing
-it means also removing it from both config files and accepting the behaviour change. Note that
-enabling outlines would visibly change the UI for every existing user.
+**Blocked on a decision**, but no longer on missing information: `TECH_DEBT.md` item 11 records
+what the pre-iced Cairo path did — when `show_button_outlines` is false it *hides* button
+backgrounds (sets the colour to black); the iced path always draws them at 0.2 gray. So
+implementing it is a small change to `button_style` (XS–S).
+
+The decision is whether to implement or delete. Implementing restores documented behaviour but
+visibly changes the UI for every existing user who has the key set to false. Deleting drops an
+advertised feature and means editing both shipped configs.
 
 ---
 
@@ -162,6 +173,10 @@ the source is 8-bit hex, so the extra precision is never real.
 
 **Fix:** Use `iced_core::Color` from the config boundary inward.
 
+As of `355c991` this accounts for the 35 remaining `cast_*` warnings, clustered in
+`src/iced_renderer.rs` (14) and `src/widgets/battery.rs` (10). Those are widget-layout
+coordinates, not pixel math — the pixel path no longer casts at all.
+
 ---
 
 ## 36. Inconsistent Error Handling
@@ -175,8 +190,13 @@ Error handling varies by module with no stated rule:
 - `backlight.rs` — `eprintln!` plus graceful degradation
 
 **Fix:** Write the rule down first — `anyhow::Result` for anything on the startup path,
-degrade-and-log for anything on the runtime path — then converge on it. Large and diffuse; best
-done opportunistically alongside the tracing migration seeded in `1534e7c`, not as one change.
+degrade-and-log for anything on the runtime path — then converge on it.
+
+This item now has a number attached, which is what it was always missing: the clippy panic
+family enabled in `5ffba20` reports **46** sites (40 `unwrap` on `Result`, 3 on `Option`,
+3 `expect`), concentrated in `main.rs` startup and `config.rs`. The sites are independent, so
+this parallelises well across agents — it is the most mechanical of the remaining items despite
+the `L` sizing.
 
 ---
 
@@ -252,12 +272,16 @@ This is one of the crate's live warnings.
 
 ---
 
-## 49. `.worktrees/` Is Not Ignored
+## 50. `WorkspacesConfigProxy::provider` Parsed but Never Read
 
-**File:** `.gitignore`
+**File:** `src/config.rs`
 
-Agent and feature worktrees are created under `.worktrees/` (and the harness uses
-`.claude/worktrees/`), neither of which is ignored, so they show up as untracked noise in
-`git status`.
+`WorkspacesConfig::provider` was removed in `256eeef` (item 11) because niri is the only
+backend, but the field survives on the deserialisation proxy. So `Provider = "niri"` in a
+config file is still accepted and silently ignored, and rustc reports
+`field \`provider\` is never read`.
 
-**Fix:** Add `/.worktrees` and `/.claude/worktrees` to `.gitignore`.
+Same shape as the `Battery { mode }` and `Icon { theme }` fields that item 9 and 10 removed.
+
+**Fix:** Drop the field from the proxy. Existing configs setting it keep working —
+`WidgetEntry` uses `#[serde(flatten)]` so unknown keys are ignored, not rejected.
